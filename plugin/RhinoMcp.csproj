@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>RhinoMcp</AssemblyName>
+    <RootNamespace>RhinoMcp</RootNamespace>
+    <TargetExt>.rhp</TargetExt>
+    <Version>0.2.0</Version>
+    <UseWpf>false</UseWpf>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RhinoCommon" Version="8.*" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Eto.Forms" Version="2.8.3" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.Net.Http" />
+    <EmbeddedResource Include="..\rhino\mcp_listener.py" LogicalName="RhinoMcp.mcp_listener.py" />
+  </ItemGroup>
+
+</Project>

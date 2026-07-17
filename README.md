@@ -19,7 +19,36 @@ Grasshopper only runs inside Rhino's process, so a small listener script runs in
 Rhino and executes every command on Rhino's UI thread. The Node server is what the
 MCP client talks to.
 
-## Setup
+## Rhino plugin: auto-start + in-Rhino chat (recommended)
+
+The `plugin/` folder contains **RhinoMcp.rhp**, a Rhino 8 plugin that replaces the
+manual setup below:
+
+- Auto-starts the TCP listener at every Rhino startup (no ScriptEditor step).
+- Adds a dockable **Claude chat panel** (`McpChat` command) so you can talk to an
+  agent directly inside Rhino. The agent runs locally via the Claude Agent SDK
+  (using your Claude Code login) and has all the Rhino/Grasshopper tools.
+- Commands: `McpChat` (open panel), `McpListenerRestart`, `McpAgentRestart`.
+
+Build and install:
+
+```
+cd plugin
+dotnet build -c Release
+```
+
+Then drag `plugin\bin\Release\net48\RhinoMcp.rhp` into an open Rhino window once
+and restart Rhino. Keep the `.rhp` inside the repo folder — the plugin locates
+`agent/server.mjs` and `rhino/mcp_listener.py` relative to itself.
+
+The chat panel needs the agent dependencies installed once:
+
+```
+cd agent
+npm install
+```
+
+## Manual setup (script only, no plugin)
 
 1. **Build** (already done if `dist/` exists):
    ```
