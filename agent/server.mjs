@@ -6,6 +6,7 @@
 //   node agent/server.mjs
 
 import http from "node:http";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -41,6 +42,63 @@ function summarize(input) {
   return s.length > 220 ? s.slice(0, 220) + "..." : s;
 }
 
+const IMAGE_MEDIA_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+/**
+ * Build the SDK prompt. Plain text when there are no image attachments;
+ * otherwise a single streamed user message whose content blocks embed each
+ * image so the model can actually see it. Non-image files are handed to the
+ * agent as absolute paths for it to Read on demand.
+ */
+function buildPrompt(message, attachments, sessionId, send) {
+  const files = Array.isArray(attachments) ? attachments : [];
+  const images = [];
+  const otherPaths = [];
+
+  for (const f of files) {
+    const ext = path.extname(f).toLowerCase();
+    const mediaType = IMAGE_MEDIA_TYPES[ext];
+    if (mediaType) {
+      try {
+        const data = fs.readFileSync(f).toString("base64");
+        images.push({ type: "image", source: { type: "base64", media_type: mediaType, data } });
+      } catch (e) {
+        send({ type: "tool_error", message: `Could not read image ${f}: ${e.message}` });
+      }
+    } else {
+      otherPaths.push(f);
+    }
+  }
+
+  let text = message;
+  if (otherPaths.length) {
+    text +=
+      "\n\nAttached files (use the Read tool to open them):\n" +
+      otherPaths.map((p) => `- ${p}`).join("\n");
+  }
+
+  if (images.length === 0) {
+    return text;
+  }
+
+  const content = [{ type: "text", text }, ...images];
+  async function* generator() {
+    yield {
+      type: "user",
+      message: { role: "user", content },
+      parent_tool_use_id: null,
+      session_id: sessionId || "",
+    };
+  }
+  return generator();
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -55,9 +113,9 @@ const server = http.createServer(async (req, res) => {
 
   let body = "";
   for await (const chunk of req) body += chunk;
-  let message, sessionId;
+  let message, sessionId, model, attachments;
   try {
-    ({ message, sessionId } = JSON.parse(body || "{}"));
+    ({ message, sessionId, model, attachments } = JSON.parse(body || "{}"));
   } catch {
     res.writeHead(400);
     res.end("bad json");
@@ -75,11 +133,14 @@ const server = http.createServer(async (req, res) => {
   });
   const send = (obj) => res.write(JSON.stringify(obj) + "\n");
 
+  const prompt = buildPrompt(message, attachments, sessionId, send);
+
   const q = query({
-    prompt: message,
+    prompt,
     options: {
       cwd: REPO,
       resume: sessionId || undefined,
+      ...(model ? { model } : {}),
       permissionMode: "bypassPermissions",
       disallowedTools: ["Bash", "Write", "Edit", "NotebookEdit"],
       mcpServers: {
