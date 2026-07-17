@@ -1,0 +1,21 @@
+{
+  "name": "rhino-gh-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Rhino 8 + Grasshopper: lets AI agents create geometry and build Grasshopper definitions (recipes) live",
+  "type": "module",
+  "bin": {
+    "rhino-gh-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
