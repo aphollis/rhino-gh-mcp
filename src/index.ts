@@ -272,12 +272,48 @@ server.registerTool(
   "gh_get_canvas",
   {
     description:
-      "Get the full state of the Grasshopper definition: every object with its id, type, position, " +
-      "current values, wiring (input sources), data counts, and runtime errors/warnings. " +
-      "Call this after building or editing to verify the definition is healthy.",
-    inputSchema: {},
+      "Get the state of the Grasshopper definition. detail='summary' (default) returns a compact " +
+      "line per object (handle, type, nickname, and any errors/warnings) — cheap, use this first. " +
+      "detail='problems' returns full detail for only the components that have errors/warnings. " +
+      "detail='full' returns everything (params, wiring, data counts) for every object.",
+    inputSchema: {
+      detail: z.enum(["summary", "problems", "full"]).optional().describe("Verbosity (default summary)"),
+    },
   },
-  async () => relay("gh.canvas", {}, 120_000),
+  async ({ detail }) => relay("gh.canvas", { detail }, 120_000),
+);
+
+server.registerTool(
+  "gh_edit",
+  {
+    description:
+      "Apply a batch of edits to the canvas in ONE call, solving once at the end and reporting " +
+      "per-op results plus any resulting errors. Prefer this over multiple gh_set_value/gh_connect " +
+      "calls. Each op has an 'op' field: " +
+      "{op:'set', id, value, min?, max?}, " +
+      "{op:'connect', from_id, from_param?, to_id, to_param?}, " +
+      "{op:'disconnect', to_id, to_param?, from_id?}, " +
+      "{op:'delete', id}. ids may be handles or GUIDs.",
+    inputSchema: {
+      ops: z
+        .array(
+          z.object({
+            op: z.enum(["set", "connect", "disconnect", "delete"]),
+            id: z.string().optional(),
+            value: z.union([z.number(), z.string(), z.boolean()]).optional(),
+            min: z.number().optional(),
+            max: z.number().optional(),
+            from_id: z.string().optional(),
+            from_param: z.string().optional(),
+            to_id: z.string().optional(),
+            to_param: z.string().optional(),
+          }),
+        )
+        .min(1)
+        .describe("Ordered list of edit operations"),
+    },
+  },
+  async ({ ops }) => relay("gh.edit", { ops }, 300_000),
 );
 
 server.registerTool(

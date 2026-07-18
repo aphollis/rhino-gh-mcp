@@ -742,17 +742,137 @@ def cmd_gh_delete(params):
     return run_on_ui(work)
 
 
-def cmd_gh_canvas(params):
+def cmd_gh_edit(params):
+    """Apply a batch of edits (set/connect/disconnect/delete) in one round-trip,
+    solving once at the end and reporting per-op results + affected errors."""
+    ops = params.get("ops") or []
+    if not ops:
+        raise RuntimeError("No ops provided.")
+
     def work():
         doc = get_doc()
-        objs = [describe_obj(o) for o in doc.Objects]
-        n_err = sum(1 for o in objs if o.get("errors"))
-        n_warn = sum(1 for o in objs if o.get("warnings"))
-        return {"file": safe_str(doc.FilePath),
-                "object_count": len(objs),
+        results = []
+        touched = set()
+
+        for i, op in enumerate(ops):
+            kind = (op.get("op") or "").lower()
+            try:
+                if kind == "set":
+                    obj = find_obj(doc, op.get("id"))
+                    tn = obj.GetType().Name
+                    if tn in ("GH_NumberSlider", "GH_Panel", "GH_BooleanToggle", "GH_ValueList"):
+                        apply_props(obj, op)
+                    elif hasattr(obj, "SetPersistentData"):
+                        obj.SetPersistentData(op.get("value"))
+                    else:
+                        raise RuntimeError("cannot set value on %s" % tn)
+                    if hasattr(obj, "ExpireSolution"):
+                        obj.ExpireSolution(False)
+                    touched.add(safe_str(obj.InstanceGuid))
+                    results.append({"op": i, "ok": True})
+                elif kind == "connect":
+                    src = find_obj(doc, op.get("from_id"))
+                    tgt = find_obj(doc, op.get("to_id"))
+                    sp = resolve_param(src, op.get("from_param"), "output")
+                    tp = resolve_param(tgt, op.get("to_param"), "input")
+                    if sp not in list(tp.Sources):
+                        tp.AddSource(sp)
+                    touched.add(safe_str(tgt.InstanceGuid))
+                    results.append({"op": i, "ok": True})
+                elif kind == "disconnect":
+                    tgt = find_obj(doc, op.get("to_id"))
+                    tp = resolve_param(tgt, op.get("to_param"), "input")
+                    if op.get("from_id"):
+                        src = find_obj(doc, op.get("from_id"))
+                        tp.RemoveSource(resolve_param(src, op.get("from_param"), "output"))
+                    else:
+                        tp.RemoveAllSources()
+                    touched.add(safe_str(tgt.InstanceGuid))
+                    results.append({"op": i, "ok": True})
+                elif kind == "delete":
+                    obj = find_obj(doc, op.get("id"))
+                    guid = str(obj.InstanceGuid)
+                    doc.RemoveObject(obj, False)
+                    for k, v in list(_HANDLES.items()):
+                        if v == guid:
+                            del _HANDLES[k]
+                    results.append({"op": i, "ok": True})
+                else:
+                    results.append({"op": i, "ok": False, "error": "unknown op '%s'" % kind})
+            except Exception as e:
+                results.append({"op": i, "ok": False, "error": safe_str(e)})
+
+        doc.NewSolution(True)
+
+        problems = []
+        for guid in touched:
+            try:
+                obj = find_obj(doc, guid)
+            except Exception:
+                continue
+            m = messages(obj)
+            if m["errors"] or m["warnings"]:
+                problems.append({"id": guid, "key": handle_for(guid),
+                                 "errors": m["errors"], "warnings": m["warnings"]})
+        ok = all(r["ok"] for r in results) and not any(p["errors"] for p in problems)
+        return {"ok": ok, "results": results, "runtime_problems": problems}
+
+    return run_on_ui(work, timeout=UI_TIMEOUT)
+
+
+def handle_for(guid_str):
+    for k, v in _HANDLES.items():
+        if v == guid_str:
+            return k
+    return None
+
+
+def summarize_obj(o):
+    """One compact line per object: handle, type, nickname, and problems only."""
+    guid = safe_str(o.InstanceGuid)
+    d = {"id": guid, "type": o.GetType().Name,
+         "nickname": safe_str(o.NickName) or safe_str(o.Name)}
+    key = handle_for(guid)
+    if key:
+        d["key"] = key
+    m = messages(o)
+    if m["errors"]:
+        d["errors"] = m["errors"]
+    if m["warnings"]:
+        d["warnings"] = m["warnings"]
+    return d
+
+
+def cmd_gh_canvas(params):
+    detail = (params.get("detail") or "summary").lower()
+
+    def work():
+        doc = get_doc()
+        all_objs = list(doc.Objects)
+        n_err = 0
+        n_warn = 0
+        problems = []
+        for o in all_objs:
+            m = messages(o)
+            if m["errors"]:
+                n_err += 1
+            if m["warnings"]:
+                n_warn += 1
+
+        head = {"file": safe_str(doc.FilePath),
+                "object_count": len(all_objs),
                 "objects_with_errors": n_err,
-                "objects_with_warnings": n_warn,
-                "objects": objs}
+                "objects_with_warnings": n_warn}
+
+        if detail == "full":
+            head["objects"] = [describe_obj(o) for o in all_objs]
+        elif detail == "problems":
+            head["objects"] = [describe_obj(o) for o in all_objs if messages(o)["errors"] or messages(o)["warnings"]]
+            head["note"] = "Only components with errors/warnings shown. Use detail='full' for everything."
+        else:  # summary
+            head["objects"] = [summarize_obj(o) for o in all_objs]
+            head["note"] = "Compact view (handle, type, problems). Use detail='full' for params/wiring or detail='problems' for only broken components."
+        return head
 
     return run_on_ui(work, timeout=120)
 
@@ -1026,6 +1146,7 @@ HANDLERS = {
     "gh.connect": cmd_gh_connect,
     "gh.disconnect": cmd_gh_disconnect,
     "gh.delete": cmd_gh_delete,
+    "gh.edit": cmd_gh_edit,
     "gh.canvas": cmd_gh_canvas,
     "gh.output": cmd_gh_output,
     "gh.recompute": cmd_gh_recompute,

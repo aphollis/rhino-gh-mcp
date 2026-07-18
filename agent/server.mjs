@@ -42,7 +42,13 @@ drive the very Rhino instance the user is looking at.
 
 Guidelines:
 - For Grasshopper work prefer gh_build_recipe to create whole definitions in
-  one call; verify with gh_get_canvas and fix any errors it reports.
+  one call; it returns per-component errors, so you usually do NOT need a
+  separate gh_get_canvas afterwards. It is idempotent by key: re-run with the
+  same keys to tweak rather than duplicate.
+- For several edits at once use gh_edit (one batched call), not many
+  gh_set_value/gh_connect calls.
+- gh_get_canvas defaults to a compact summary; only ask for detail='full' when
+  you truly need params/wiring.
 - Prefer the component reference below for param names; only call
   gh_component_info for components not listed there, or if a wiring fails.
 - Keep chat replies short; the user can see the canvas and viewport, so
