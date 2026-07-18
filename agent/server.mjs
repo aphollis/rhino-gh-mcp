@@ -42,6 +42,34 @@ function summarize(input) {
   return s.length > 220 ? s.slice(0, 220) + "..." : s;
 }
 
+const METRICS_PATH = path.join(__dirname, "metrics.jsonl");
+
+/** Append one per-request metrics record for benchmarking each phase. */
+function recordMetrics(rec) {
+  try {
+    const u = rec.usage || {};
+    const line = {
+      ts: new Date().toISOString(),
+      label: rec.label,
+      model: rec.model,
+      turns: rec.turns,
+      toolCalls: rec.toolCalls,
+      toolCounts: rec.toolCounts,
+      inputTokens: u.input_tokens ?? null,
+      outputTokens: u.output_tokens ?? null,
+      cacheReadTokens: u.cache_read_input_tokens ?? null,
+      cacheCreateTokens: u.cache_creation_input_tokens ?? null,
+      cost: rec.cost ?? null,
+      durationMs: rec.durationMs,
+      isError: rec.isError,
+      subtype: rec.subtype,
+    };
+    fs.appendFileSync(METRICS_PATH, JSON.stringify(line) + "\n");
+  } catch (e) {
+    console.error("metrics write failed:", e.message);
+  }
+}
+
 const IMAGE_MEDIA_TYPES = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -113,9 +141,9 @@ const server = http.createServer(async (req, res) => {
 
   let body = "";
   for await (const chunk of req) body += chunk;
-  let message, sessionId, model, attachments;
+  let message, sessionId, model, attachments, label;
   try {
-    ({ message, sessionId, model, attachments } = JSON.parse(body || "{}"));
+    ({ message, sessionId, model, attachments, label } = JSON.parse(body || "{}"));
   } catch {
     res.writeHead(400);
     res.end("bad json");
@@ -132,6 +160,10 @@ const server = http.createServer(async (req, res) => {
     "Cache-Control": "no-cache",
   });
   const send = (obj) => res.write(JSON.stringify(obj) + "\n");
+
+  let toolCalls = 0;
+  const toolCounts = {};
+  const startedAt = Date.now();
 
   const prompt = buildPrompt(message, attachments, sessionId, send);
 
@@ -171,6 +203,9 @@ const server = http.createServer(async (req, res) => {
           if (block.type === "text" && block.text?.trim()) {
             send({ type: "text", text: block.text });
           } else if (block.type === "tool_use") {
+            toolCalls++;
+            const short = block.name.replace(/^mcp__rhino-grasshopper__/, "");
+            toolCounts[short] = (toolCounts[short] || 0) + 1;
             send({ type: "tool", name: block.name, input: summarize(block.input) });
           }
         }
@@ -184,11 +219,25 @@ const server = http.createServer(async (req, res) => {
           }
         }
       } else if (msg.type === "result") {
+        recordMetrics({
+          label: label || null,
+          model: model || "default",
+          turns: msg.num_turns,
+          toolCalls,
+          toolCounts,
+          usage: msg.usage || null,
+          cost: msg.total_cost_usd,
+          durationMs: Date.now() - startedAt,
+          isError: msg.is_error,
+          subtype: msg.subtype,
+        });
         send({
           type: "done",
           sessionId: msg.session_id,
           cost: msg.total_cost_usd,
           isError: msg.is_error,
+          turns: msg.num_turns,
+          toolCalls,
           ...(msg.subtype !== "success" ? { note: msg.subtype } : {}),
         });
       }
