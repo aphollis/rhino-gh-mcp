@@ -1,0 +1,28 @@
+{
+  "name": "voronoi-panel",
+  "description": "A 2D Voronoi pattern from random points inside a rectangle. Exposed params: width, depth, count.",
+  "parameters": [
+    { "key": "width", "label": "Width", "default": 50 },
+    { "key": "depth", "label": "Depth", "default": 50 },
+    { "key": "count", "label": "Point count", "default": 40 }
+  ],
+  "recipe": {
+    "clear": false,
+    "components": [
+      { "key": "width", "type": "slider", "min": 5, "max": 200, "value": 50, "nickname": "Width" },
+      { "key": "depth", "type": "slider", "min": 5, "max": 200, "value": 50, "nickname": "Depth" },
+      { "key": "count", "type": "slider", "min": 3, "max": 300, "value": 40, "integer": true, "nickname": "Count" },
+      { "key": "rect", "type": "Rectangle" },
+      { "key": "pop", "type": "Populate 2D" },
+      { "key": "voronoi", "type": "Voronoi" }
+    ],
+    "connections": [
+      { "from": "width", "to": "rect", "to_param": "X Size" },
+      { "from": "depth", "to": "rect", "to_param": "Y Size" },
+      { "from": "rect", "from_param": "Rectangle", "to": "pop", "to_param": "Region" },
+      { "from": "count", "to": "pop", "to_param": "Count" },
+      { "from": "pop", "to": "voronoi", "to_param": "Points" },
+      { "from": "rect", "from_param": "Rectangle", "to": "voronoi", "to_param": "Boundary" }
+    ]
+  }
+}

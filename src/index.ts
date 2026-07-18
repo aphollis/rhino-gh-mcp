@@ -2,10 +2,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { RhinoBridge } from "./bridge.js";
 
 const PORT = Number(process.env.RHINO_MCP_PORT ?? 8765);
 const bridge = new RhinoBridge("127.0.0.1", PORT);
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TEMPLATES_DIR = path.resolve(__dirname, "..", "templates");
 
 const INSTRUCTIONS = `
 Tools for driving Rhino 8 and Grasshopper live. A listener script must be running
@@ -427,6 +433,91 @@ server.registerTool(
   },
   async ({ components, connections, clear }) =>
     relay("gh.build", { definition: { components, connections: connections ?? [], clear: clear ?? false } }, 300_000),
+);
+
+/* ------------------------------- Templates -------------------------------- */
+
+type Template = {
+  name: string;
+  description: string;
+  parameters?: Array<{ key: string; label?: string; default?: unknown }>;
+  recipe: { components: any[]; connections?: any[]; clear?: boolean };
+};
+
+function loadTemplates(): Template[] {
+  try {
+    return fs
+      .readdirSync(TEMPLATES_DIR)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, f), "utf8")) as Template)
+      .filter((t) => t && t.name && t.recipe);
+  } catch {
+    return [];
+  }
+}
+
+server.registerTool(
+  "gh_list_templates",
+  {
+    description:
+      "List the built-in parametric templates (proven Grasshopper definitions). Apply one with " +
+      "gh_apply_template instead of building common definitions from scratch — it is far cheaper and " +
+      "more reliable. Returns each template's name, description, and exposed parameters.",
+    inputSchema: {},
+  },
+  async () =>
+    text(
+      loadTemplates().map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters ?? [],
+      })),
+    ),
+);
+
+server.registerTool(
+  "gh_apply_template",
+  {
+    description:
+      "Build one of the built-in templates on the canvas, optionally overriding its exposed parameters. " +
+      "Use gh_list_templates first to see names and parameters. Returns the created component handles " +
+      "and any errors. Example: name='circle-tower', params={radius: 12, height: 40}.",
+    inputSchema: {
+      name: z.string().describe("Template name from gh_list_templates"),
+      params: z
+        .record(z.union([z.number(), z.string(), z.boolean()]))
+        .optional()
+        .describe("Overrides for exposed parameters, keyed by parameter key"),
+      clear: z.boolean().optional().describe("Clear the canvas before building (default false)"),
+    },
+  },
+  async ({ name, params, clear }) => {
+    const tpl = loadTemplates().find((t) => t.name === name);
+    if (!tpl) {
+      return errorResult(
+        `No template named '${name}'. Available: ${loadTemplates().map((t) => t.name).join(", ") || "(none)"}`,
+      );
+    }
+    // Apply parameter overrides onto the matching components (by key).
+    const components = tpl.recipe.components.map((c) => ({ ...c }));
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        const comp = components.find((c) => c.key === key);
+        if (comp) comp.value = value;
+      }
+    }
+    return relay(
+      "gh.build",
+      {
+        definition: {
+          components,
+          connections: tpl.recipe.connections ?? [],
+          clear: clear ?? tpl.recipe.clear ?? false,
+        },
+      },
+      300_000,
+    );
+  },
 );
 
 /* --------------------------------- main ----------------------------------- */

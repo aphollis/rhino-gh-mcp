@@ -1,0 +1,24 @@
+{
+  "name": "circle-tower",
+  "description": "A vertical extrusion of a circle - a simple parametric tower. Exposed params: radius, height.",
+  "parameters": [
+    { "key": "radius", "label": "Radius", "default": 8 },
+    { "key": "height", "label": "Height", "default": 30 }
+  ],
+  "recipe": {
+    "clear": false,
+    "components": [
+      { "key": "radius", "type": "slider", "min": 1, "max": 50, "value": 8, "nickname": "Radius" },
+      { "key": "height", "type": "slider", "min": 1, "max": 100, "value": 30, "nickname": "Height" },
+      { "key": "circle", "type": "Circle" },
+      { "key": "dir", "type": "Unit Z" },
+      { "key": "tower", "type": "Extrude" }
+    ],
+    "connections": [
+      { "from": "radius", "to": "circle", "to_param": "Radius" },
+      { "from": "height", "to": "dir", "to_param": "Factor" },
+      { "from": "circle", "to": "tower", "to_param": "Base" },
+      { "from": "dir", "to": "tower", "to_param": "Direction" }
+    ]
+  }
+}

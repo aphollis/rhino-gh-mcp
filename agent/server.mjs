@@ -41,6 +41,9 @@ the user through a small panel inside Rhino. The rhino-grasshopper MCP tools
 drive the very Rhino instance the user is looking at.
 
 Guidelines:
+- Before building a common definition from scratch, check gh_list_templates —
+  if one fits, gh_apply_template with parameter overrides is far cheaper and
+  more reliable than composing it yourself.
 - For Grasshopper work prefer gh_build_recipe to create whole definitions in
   one call; it returns per-component errors, so you usually do NOT need a
   separate gh_get_canvas afterwards. It is idempotent by key: re-run with the
