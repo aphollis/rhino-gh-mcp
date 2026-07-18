@@ -29,6 +29,12 @@ manual setup below:
   agent directly inside Rhino. The agent runs locally via the Claude Agent SDK
   (using your Claude Code login) and has all the Rhino/Grasshopper tools.
 - Commands: `McpChat` (open panel), `McpListenerRestart`, `McpAgentRestart`.
+- **Persistent history** — every conversation (transcript + resumable session id)
+  is saved to `%LOCALAPPDATA%\rhino-gh-mcp\sessions`. The panel auto-restores your
+  most recent conversation on load (so a Rhino crash or restart is seamless), and
+  the **History** button reopens any past conversation. Continuing a restored
+  chat resumes with full context via the Claude Agent SDK, not just the visible
+  text.
 
 Build and install:
 

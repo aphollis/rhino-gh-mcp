@@ -7,6 +7,7 @@
 
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -14,6 +15,81 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const PORT = Number(process.env.AGENT_PORT ?? 8766);
+
+// Persistent chat history so a conversation survives Rhino crashes/restarts.
+// Stored outside the repo (LOCALAPPDATA) so it isn't committed and survives
+// repo moves; the C# panel reads the same directory to list/restore sessions.
+const SESSIONS_DIR = path.join(
+  process.env.LOCALAPPDATA || os.tmpdir(),
+  "rhino-gh-mcp",
+  "sessions",
+);
+
+function nowIso() {
+  return new Date().toISOString();
+}
+function sessionFile(id) {
+  return path.join(SESSIONS_DIR, id + ".json");
+}
+function loadSession(id) {
+  try {
+    return JSON.parse(fs.readFileSync(sessionFile(id), "utf8"));
+  } catch {
+    return null;
+  }
+}
+function saveSession(s) {
+  try {
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+    fs.writeFileSync(sessionFile(s.id), JSON.stringify(s));
+  } catch (e) {
+    console.error("session save failed:", e.message);
+  }
+}
+/** Get or create a session file; seed from a prior id if the SDK forked ids. */
+function ensureSession(id, seedFromId) {
+  const existing = loadSession(id);
+  if (existing) return existing;
+  const seed = seedFromId && seedFromId !== id ? loadSession(seedFromId) : null;
+  const s = {
+    id,
+    title: seed ? seed.title : null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    messages: seed ? seed.messages.slice() : [],
+  };
+  saveSession(s);
+  return s;
+}
+function appendMessage(id, role, text, extra) {
+  const s = loadSession(id) || ensureSession(id);
+  const msg = { role, text };
+  if (extra) Object.assign(msg, extra);
+  s.messages.push(msg);
+  if (!s.title && role === "user" && text) s.title = text.slice(0, 60);
+  s.updatedAt = nowIso();
+  saveSession(s);
+}
+function listSessions(limit = 50) {
+  try {
+    return fs
+      .readdirSync(SESSIONS_DIR)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => {
+        try {
+          const s = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, f), "utf8"));
+          return { id: s.id, title: s.title, updatedAt: s.updatedAt, messageCount: (s.messages || []).length };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
 
 /** Compact component reference, loaded once into the cached system prompt so
  *  the agent rarely needs gh_component_info. Format: "Name: in(A,B) -> out(C)". */
@@ -179,6 +255,23 @@ const server = http.createServer(async (req, res) => {
     res.end("ok");
     return;
   }
+  if (req.method === "GET" && req.url === "/sessions") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(listSessions()));
+    return;
+  }
+  if (req.method === "GET" && req.url.startsWith("/session?")) {
+    const id = new URL(req.url, "http://x").searchParams.get("id");
+    const s = id && loadSession(id);
+    if (!s) {
+      res.writeHead(404);
+      res.end("no such session");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(s));
+    return;
+  }
   if (req.method !== "POST" || req.url !== "/chat") {
     res.writeHead(404);
     res.end();
@@ -210,6 +303,10 @@ const server = http.createServer(async (req, res) => {
   let toolCalls = 0;
   const toolCounts = {};
   const startedAt = Date.now();
+  let convId = null; // canonical session id for history (from the init event)
+  const attachmentNames = (Array.isArray(attachments) ? attachments : []).map((f) =>
+    f.split(/[\\/]/).pop(),
+  );
 
   const prompt = buildPrompt(message, attachments, sessionId, send);
   const routedModel = routeModel(model, message);
@@ -250,15 +347,23 @@ const server = http.createServer(async (req, res) => {
   try {
     for await (const msg of q) {
       if (msg.type === "system" && msg.subtype === "init") {
+        convId = msg.session_id;
+        // Seed from the resumed id if the SDK assigned a fresh one, then log
+        // the user's message so the transcript survives a crash mid-turn.
+        ensureSession(convId, sessionId);
+        appendMessage(convId, "user", message,
+          attachmentNames.length ? { attachments: attachmentNames } : undefined);
         send({ type: "session", sessionId: msg.session_id });
       } else if (msg.type === "assistant") {
         for (const block of msg.message.content ?? []) {
           if (block.type === "text" && block.text?.trim()) {
+            if (convId) appendMessage(convId, "assistant", block.text);
             send({ type: "text", text: block.text });
           } else if (block.type === "tool_use") {
             toolCalls++;
             const short = block.name.replace(/^mcp__rhino-grasshopper__/, "");
             toolCounts[short] = (toolCounts[short] || 0) + 1;
+            if (convId) appendMessage(convId, "tool", short);
             send({ type: "tool", name: block.name, input: summarize(block.input) });
           }
         }

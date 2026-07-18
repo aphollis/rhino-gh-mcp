@@ -30,6 +30,7 @@ namespace RhinoMcp
         private readonly Button _send;
         private readonly Button _stop;
         private readonly Button _newChat;
+        private readonly Button _historyBtn;
         private readonly Button _attach;
         private readonly Button _clearAttach;
         private readonly DropDown _model;
@@ -40,6 +41,11 @@ namespace RhinoMcp
         private string _sessionId;
         private CancellationTokenSource _cts;
         private HttpResponseMessage _activeResponse;
+
+        private static string SessionsDir =>
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "rhino-gh-mcp", "sessions");
 
         public ChatPanel()
         {
@@ -59,6 +65,7 @@ namespace RhinoMcp
             _send = new Button { Text = "Send" };
             _stop = new Button { Text = "Stop", Enabled = false };
             _newChat = new Button { Text = "New chat" };
+            _historyBtn = new Button { Text = "History", ToolTip = "Restore a previous conversation" };
             _attach = new Button { Text = "Attach", ToolTip = "Attach images or files for Claude to look at" };
             _clearAttach = new Button { Text = "✕", Enabled = false, ToolTip = "Remove attachments" };
             _attachLabel = new Label { Font = new Font(FontFamilies.Sans, 8f) };
@@ -79,6 +86,7 @@ namespace RhinoMcp
             _send.Click += (s, e) => Send();
             _stop.Click += (s, e) => CancelActive();
             _newChat.Click += (s, e) => ResetChat();
+            _historyBtn.Click += (s, e) => ShowHistoryDialog();
             _attach.Click += (s, e) => PickAttachments();
             _clearAttach.Click += (s, e) =>
             {
@@ -115,6 +123,7 @@ namespace RhinoMcp
                                 new TableCell(_clearAttach),
                                 new TableCell(_model),
                                 new TableCell(_attachLabel, true),
+                                new TableCell(_historyBtn),
                                 new TableCell(_stop),
                                 new TableCell(_send),
                                 new TableCell(_newChat)),
@@ -123,9 +132,139 @@ namespace RhinoMcp
                 },
             };
 
-            Append("Claude for Rhino + Grasshopper.\n" +
-                   "Try: \"Build a parametric circle extrusion with radius and height sliders.\"\n" +
-                   "Enter sends, Shift+Enter adds a line. Attach images/files with the Attach button.\n");
+            if (!RestoreMostRecent())
+            {
+                Append("Claude for Rhino + Grasshopper.\n" +
+                       "Try: \"Build a parametric circle extrusion with radius and height sliders.\"\n" +
+                       "Enter sends, Shift+Enter adds a line. Attach images/files with the Attach button.\n");
+            }
+        }
+
+        /* ---------------------------- history ---------------------------- */
+
+        private class SessionInfo
+        {
+            public string Id;
+            public string Title;
+            public string Updated;
+            public override string ToString()
+            {
+                var when = Updated;
+                if (DateTime.TryParse(Updated, out var dt)) when = dt.ToLocalTime().ToString("g");
+                return (string.IsNullOrEmpty(Title) ? "(untitled)" : Title) + "   —   " + when;
+            }
+        }
+
+        private static List<SessionInfo> ListSessions()
+        {
+            var list = new List<SessionInfo>();
+            try
+            {
+                if (!Directory.Exists(SessionsDir)) return list;
+                foreach (var file in Directory.GetFiles(SessionsDir, "*.json"))
+                {
+                    try
+                    {
+                        var o = JObject.Parse(File.ReadAllText(file));
+                        list.Add(new SessionInfo
+                        {
+                            Id = (string)o["id"],
+                            Title = (string)o["title"],
+                            Updated = (string)o["updatedAt"],
+                        });
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return list.OrderByDescending(s => s.Updated ?? "").ToList();
+        }
+
+        private bool RestoreMostRecent()
+        {
+            var recent = ListSessions().FirstOrDefault();
+            if (recent == null) return false;
+            return RestoreSession(recent.Id, quiet: true);
+        }
+
+        private bool RestoreSession(string id, bool quiet = false)
+        {
+            try
+            {
+                var file = Path.Combine(SessionsDir, id + ".json");
+                if (!File.Exists(file)) return false;
+                var o = JObject.Parse(File.ReadAllText(file));
+                _history.Text = "";
+                foreach (var m in (JArray)(o["messages"] ?? new JArray()))
+                {
+                    var role = (string)m["role"];
+                    var text = (string)m["text"] ?? "";
+                    if (role == "user")
+                    {
+                        _history.Append("\nYou: " + text + "\n", true);
+                        var att = m["attachments"] as JArray;
+                        if (att != null && att.Count > 0)
+                            _history.Append("  [attached: " + string.Join(", ", att.Select(a => (string)a)) + "]\n", true);
+                    }
+                    else if (role == "assistant")
+                        _history.Append("\nClaude: " + text + "\n", true);
+                    else if (role == "tool")
+                        _history.Append("  [tool] " + text + "\n", true);
+                }
+                _sessionId = id;
+                SetStatus(quiet ? "Restored previous conversation." : "Restored.");
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void ShowHistoryDialog()
+        {
+            var sessions = ListSessions();
+            if (sessions.Count == 0)
+            {
+                MessageBox.Show(this, "No saved conversations yet.", "History");
+                return;
+            }
+
+            var dlg = new Dialog { Title = "Conversation history", Width = 460, Height = 380, Resizable = true };
+            var listBox = new ListBox();
+            foreach (var s in sessions) listBox.Items.Add(new ListItem { Text = s.ToString(), Key = s.Id });
+            listBox.SelectedIndex = 0;
+
+            var open = new Button { Text = "Open" };
+            var cancel = new Button { Text = "Cancel" };
+            open.Click += (s, e) => { dlg.Tag = listBox.SelectedKey; dlg.Close(); };
+            cancel.Click += (s, e) => { dlg.Tag = null; dlg.Close(); };
+            listBox.MouseDoubleClick += (s, e) => { dlg.Tag = listBox.SelectedKey; dlg.Close(); };
+
+            dlg.Content = new TableLayout
+            {
+                Padding = 8,
+                Spacing = new Size(6, 6),
+                Rows =
+                {
+                    new TableRow(new TableCell(listBox, true)) { ScaleHeight = true },
+                    new TableRow(new TableLayout
+                    {
+                        Spacing = new Size(6, 0),
+                        Rows = { new TableRow(null, new TableCell(cancel), new TableCell(open)) },
+                    }),
+                },
+            };
+            dlg.DefaultButton = open;
+            dlg.AbortButton = cancel;
+            dlg.ShowModal(this);
+
+            var chosen = dlg.Tag as string;
+            if (!string.IsNullOrEmpty(chosen))
+            {
+                CancelActive();
+                RestoreSession(chosen);
+            }
         }
 
         private void PickAttachments()
