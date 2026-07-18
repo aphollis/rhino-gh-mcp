@@ -25,19 +25,28 @@ namespace RhinoMcp
         private const int InputBaseHeight = 28;
         private const int InputLineHeight = 17;
 
+        // (slashCommand, modelId sent to backend, menu label). "" id = Default.
+        private static readonly (string Cmd, string Id, string Label)[] Models =
+        {
+            ("auto", "auto", "Auto (route by task)"),
+            ("default", "", "Default model"),
+            ("fable", "claude-fable-5", "Fable 5"),
+            ("opus", "claude-opus-4-8", "Opus 4.8"),
+            ("sonnet", "claude-sonnet-5", "Sonnet 5"),
+            ("haiku", "claude-haiku-4-5-20251001", "Haiku 4.5"),
+        };
+
         private readonly TextArea _history;
         private readonly TextArea _input;
-        private readonly Button _send;
-        private readonly Button _stop;
-        private readonly Button _newChat;
-        private readonly Button _historyBtn;
-        private readonly Button _attach;
-        private readonly Button _clearAttach;
-        private readonly DropDown _model;
+        private readonly Button _send;      // toggles Send <-> Stop
+        private readonly Button _menuBtn;   // overflow: New chat / History / Model / Help
+        private readonly Button _attach;    // paperclip
         private readonly Label _attachLabel;
         private readonly Label _status;
         private readonly List<string> _attachments = new List<string>();
 
+        private string _model;              // stored model id ("auto", "", or a claude id)
+        private bool _running;
         private string _sessionId;
         private CancellationTokenSource _cts;
         private HttpResponseMessage _activeResponse;
@@ -49,6 +58,8 @@ namespace RhinoMcp
 
         public ChatPanel()
         {
+            _model = LoadSetting("chat_model", "auto");
+
             _history = new TextArea
             {
                 ReadOnly = true,
@@ -60,49 +71,46 @@ namespace RhinoMcp
                 Wrap = true,
                 Font = new Font(FontFamilies.Sans, 9.5f),
                 Height = InputBaseHeight,
-                ToolTip = "Enter to send, Shift+Enter for a new line",
+                ToolTip = "Enter to send, Shift+Enter for a new line. Type / for commands.",
             };
+            _attach = new Button
+            {
+                ToolTip = "Attach images or files for Claude to look at",
+                Width = 30,
+            };
+            // Drawing needs Rhino's Eto platform; fall back to a glyph if it fails.
+            try { _attach.Image = BuildPaperclip(); }
+            catch { _attach.Text = "📎"; }
+            _menuBtn = new Button { Text = "☰", ToolTip = "New chat, history, model, help", Width = 34 };
             _send = new Button { Text = "Send" };
-            _stop = new Button { Text = "Stop", Enabled = false };
-            _newChat = new Button { Text = "New chat" };
-            _historyBtn = new Button { Text = "History", ToolTip = "Restore a previous conversation" };
-            _attach = new Button { Text = "Attach", ToolTip = "Attach images or files for Claude to look at" };
-            _clearAttach = new Button { Text = "✕", Enabled = false, ToolTip = "Remove attachments" };
             _attachLabel = new Label { Font = new Font(FontFamilies.Sans, 8f) };
             _status = new Label { Text = "Ready.", Font = new Font(FontFamilies.Sans, 8f) };
 
-            _model = new DropDown();
-            _model.Items.Add(new ListItem { Text = "Auto (route by task)", Key = "auto" });
-            _model.Items.Add(new ListItem { Text = "Default model", Key = "" });
-            _model.Items.Add(new ListItem { Text = "Fable 5", Key = "claude-fable-5" });
-            _model.Items.Add(new ListItem { Text = "Opus 4.8", Key = "claude-opus-4-8" });
-            _model.Items.Add(new ListItem { Text = "Sonnet 5", Key = "claude-sonnet-5" });
-            _model.Items.Add(new ListItem { Text = "Haiku 4.5", Key = "claude-haiku-4-5-20251001" });
-            _model.SelectedKey = LoadSetting("chat_model", "");
-            if (_model.SelectedIndex < 0)
-                _model.SelectedIndex = 0;
-            _model.SelectedKeyChanged += (s, e) => SaveSetting("chat_model", _model.SelectedKey ?? "");
-
-            _send.Click += (s, e) => Send();
-            _stop.Click += (s, e) => CancelActive();
-            _newChat.Click += (s, e) => ResetChat();
-            _historyBtn.Click += (s, e) => ShowHistoryDialog();
             _attach.Click += (s, e) => PickAttachments();
-            _clearAttach.Click += (s, e) =>
-            {
-                _attachments.Clear();
-                RefreshAttachLabel();
-            };
+            _menuBtn.Click += (s, e) => ShowMenu();
+            _send.Click += (s, e) => OnSendOrStop();
             _input.KeyDown += (s, e) =>
             {
                 if (e.Key == Keys.Enter && !e.Modifiers.HasFlag(Keys.Shift))
                 {
                     e.Handled = true;
-                    Send();
+                    OnSendOrStop();
                 }
             };
-            _input.TextChanged += (s, e) => UpdateInputHeight();
+            _input.TextChanged += (s, e) =>
+            {
+                UpdateInputHeight();
+                if ((_input.Text ?? "").StartsWith("/") && !_running)
+                    SetStatus("Commands: /model <name> · /new · /history · /help");
+            };
             _input.SizeChanged += (s, e) => UpdateInputHeight();
+
+            // Paperclip pinned to the top-left, next to the (growing) input box.
+            var clipHolder = new TableLayout
+            {
+                Spacing = new Size(0, 0),
+                Rows = { new TableRow(_attach), new TableRow(new TableCell(null)) { ScaleHeight = true } },
+            };
 
             Content = new TableLayout
             {
@@ -112,21 +120,20 @@ namespace RhinoMcp
                 {
                     new TableRow(_history) { ScaleHeight = true },
                     new TableRow(_status),
-                    new TableRow(new TableCell(_input, true)),
+                    new TableRow(new TableLayout
+                    {
+                        Spacing = new Size(3, 0),
+                        Rows = { new TableRow(new TableCell(clipHolder), new TableCell(_input, true)) },
+                    }),
                     new TableRow(new TableLayout
                     {
                         Spacing = new Size(4, 0),
                         Rows =
                         {
                             new TableRow(
-                                new TableCell(_attach),
-                                new TableCell(_clearAttach),
-                                new TableCell(_model),
                                 new TableCell(_attachLabel, true),
-                                new TableCell(_historyBtn),
-                                new TableCell(_stop),
-                                new TableCell(_send),
-                                new TableCell(_newChat)),
+                                new TableCell(_menuBtn),
+                                new TableCell(_send)),
                         },
                     }),
                 },
@@ -136,8 +143,163 @@ namespace RhinoMcp
             {
                 Append("Claude for Rhino + Grasshopper.\n" +
                        "Try: \"Build a parametric circle extrusion with radius and height sliders.\"\n" +
-                       "Enter sends, Shift+Enter adds a line. Attach images/files with the Attach button.\n");
+                       "Enter sends, Shift+Enter adds a line. 📎 attaches files. Type /help for commands.\n");
             }
+            SetStatus("Model: " + LabelForId(_model));
+        }
+
+        /* --------------------------- paperclip --------------------------- */
+
+        private static Image BuildPaperclip()
+        {
+            var bmp = new Bitmap(16, 16, PixelFormat.Format32bppRgba);
+            using (var g = new Graphics(bmp))
+            {
+                g.AntiAlias = true;
+                using (var pen = new Pen(Color.FromArgb(120, 120, 120), 1.5f))
+                {
+                    g.DrawPath(pen, Capsule(4f, 2f, 7f, 12f));
+                    g.DrawPath(pen, Capsule(6f, 4.5f, 3f, 7f));
+                }
+            }
+            return bmp;
+        }
+
+        private static IGraphicsPath Capsule(float x, float y, float w, float h)
+        {
+            var p = GraphicsPath.Create();
+            p.AddArc(x, y, w, w, 180, 180);                       // top cap
+            p.AddLine(x + w, y + w / 2f, x + w, y + h - w / 2f);  // right side
+            p.AddArc(x, y + h - w, w, w, 0, 180);                 // bottom cap
+            p.AddLine(x, y + h - w / 2f, x, y + w / 2f);          // left side
+            p.CloseFigure();
+            return p;
+        }
+
+        /* ------------------------ slash commands ------------------------- */
+
+        private bool TryHandleSlash(string msg)
+        {
+            if (!msg.StartsWith("/")) return false;
+            var parts = msg.Substring(1).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            var cmd = parts.Length > 0 ? parts[0].ToLowerInvariant() : "";
+            var arg = parts.Length > 1 ? parts[1].ToLowerInvariant() : "";
+
+            switch (cmd)
+            {
+                case "help":
+                case "?":
+                    ShowHelp();
+                    break;
+                case "new":
+                    ResetChat();
+                    break;
+                case "history":
+                    ShowHistoryDialog();
+                    break;
+                case "clear":
+                    _attachments.Clear();
+                    RefreshAttachLabel();
+                    SystemLine("Attachments cleared.");
+                    break;
+                case "model":
+                    if (string.IsNullOrEmpty(arg)) ShowModelHelp();
+                    else SetModelByName(arg);
+                    break;
+                default:
+                    if (Models.Any(m => m.Cmd == cmd)) SetModelByName(cmd);
+                    else SystemLine("Unknown command '/" + cmd + "'. Type /help.");
+                    break;
+            }
+            return true;
+        }
+
+        private void SetModelByName(string name)
+        {
+            var match = Models.FirstOrDefault(m => m.Cmd == name);
+            if (match.Cmd == null)
+            {
+                SystemLine("Unknown model '" + name + "'. Options: " +
+                           string.Join(", ", Models.Select(m => m.Cmd)));
+                return;
+            }
+            SetModel(match.Id);
+        }
+
+        private void SetModel(string id)
+        {
+            _model = id;
+            SaveSetting("chat_model", id ?? "");
+            SystemLine("Model set to " + LabelForId(id) + ".");
+            SetStatus("Model: " + LabelForId(id));
+        }
+
+        private static string LabelForId(string id)
+        {
+            foreach (var m in Models)
+                if (m.Id == (id ?? "")) return m.Label;
+            return id;
+        }
+
+        private void ShowHelp()
+        {
+            SystemLine(
+                "Commands:\n" +
+                "  /model <name>   switch model (auto, default, fable, opus, sonnet, haiku)\n" +
+                "  /auto /opus …   shortcut to switch model\n" +
+                "  /new            start a new conversation\n" +
+                "  /history        restore a previous conversation\n" +
+                "  /clear          clear pending attachments\n" +
+                "  /help           this list\n" +
+                "Current model: " + LabelForId(_model));
+        }
+
+        private void ShowModelHelp()
+        {
+            SystemLine("Current model: " + LabelForId(_model) + ". Switch with: " +
+                       string.Join(", ", Models.Select(m => "/" + m.Cmd)));
+        }
+
+        /* ---------------------------- menu ------------------------------- */
+
+        private void ShowMenu()
+        {
+            var menu = new ContextMenu();
+
+            var newItem = new ButtonMenuItem { Text = "New chat" };
+            newItem.Click += (s, e) => ResetChat();
+            menu.Items.Add(newItem);
+
+            var histItem = new ButtonMenuItem { Text = "History…" };
+            histItem.Click += (s, e) => ShowHistoryDialog();
+            menu.Items.Add(histItem);
+
+            if (_attachments.Count > 0)
+            {
+                var clr = new ButtonMenuItem { Text = "Clear attachments" };
+                clr.Click += (s, e) => { _attachments.Clear(); RefreshAttachLabel(); };
+                menu.Items.Add(clr);
+            }
+
+            menu.Items.Add(new SeparatorMenuItem());
+
+            var modelSub = new SubMenuItem { Text = "Model" };
+            foreach (var m in Models)
+            {
+                var id = m.Id;
+                var item = new ButtonMenuItem { Text = (_model == id ? "✓ " : "    ") + m.Label };
+                item.Click += (s, e) => SetModel(id);
+                modelSub.Items.Add(item);
+            }
+            menu.Items.Add(modelSub);
+
+            menu.Items.Add(new SeparatorMenuItem());
+
+            var help = new ButtonMenuItem { Text = "Help (slash commands)" };
+            help.Click += (s, e) => ShowHelp();
+            menu.Items.Add(help);
+
+            menu.Show(_menuBtn);
         }
 
         /* ---------------------------- history ---------------------------- */
@@ -267,6 +429,8 @@ namespace RhinoMcp
             }
         }
 
+        /* -------------------------- attachments -------------------------- */
+
         private void PickAttachments()
         {
             var dlg = new OpenFileDialog { MultiSelect = true, Title = "Attach files for Claude" };
@@ -282,8 +446,7 @@ namespace RhinoMcp
         {
             _attachLabel.Text = _attachments.Count == 0
                 ? ""
-                : string.Join(", ", _attachments.Select(Path.GetFileName));
-            _clearAttach.Enabled = _attachments.Count > 0;
+                : "📎 " + string.Join(", ", _attachments.Select(Path.GetFileName));
         }
 
         private void UpdateInputHeight()
@@ -299,6 +462,8 @@ namespace RhinoMcp
             if (_input.Height != height)
                 _input.Height = height;
         }
+
+        /* ----------------------------- chat ------------------------------ */
 
         private void ResetChat()
         {
@@ -317,19 +482,37 @@ namespace RhinoMcp
             try { _activeResponse?.Dispose(); } catch { }
         }
 
+        private void OnSendOrStop()
+        {
+            if (_running)
+            {
+                CancelActive();
+                return;
+            }
+            Send();
+        }
+
         private async void Send()
         {
             var msg = (_input.Text ?? "").Trim();
-            if (msg.Length == 0 || !_send.Enabled)
+            if (msg.Length == 0)
                 return;
+
+            // Slash commands are handled locally and never sent to the agent.
+            if (TryHandleSlash(msg))
+            {
+                _input.Text = "";
+                UpdateInputHeight();
+                return;
+            }
 
             var attachments = _attachments.ToList();
             _attachments.Clear();
             RefreshAttachLabel();
             _input.Text = "";
             UpdateInputHeight();
-            _send.Enabled = false;
-            _stop.Enabled = true;
+            _running = true;
+            _send.Text = "Stop";
 
             Append("\nYou: " + msg + "\n");
             if (attachments.Count > 0)
@@ -351,8 +534,8 @@ namespace RhinoMcp
                 var body = new JObject { ["message"] = msg };
                 if (_sessionId != null)
                     body["sessionId"] = _sessionId;
-                if (!string.IsNullOrEmpty(_model.SelectedKey))
-                    body["model"] = _model.SelectedKey;
+                if (!string.IsNullOrEmpty(_model))
+                    body["model"] = _model;
                 if (attachments.Count > 0)
                     body["attachments"] = new JArray(attachments.ToArray());
 
@@ -397,8 +580,8 @@ namespace RhinoMcp
             {
                 _activeResponse = null;
                 _cts = null;
-                _send.Enabled = true;
-                _stop.Enabled = false;
+                _running = false;
+                Application.Instance.AsyncInvoke(() => _send.Text = "Send");
             }
         }
 
@@ -442,10 +625,12 @@ namespace RhinoMcp
 
         private void Append(string text)
         {
-            Application.Instance.AsyncInvoke(() =>
-            {
-                _history.Append(text, true);
-            });
+            Application.Instance.AsyncInvoke(() => _history.Append(text, true));
+        }
+
+        private void SystemLine(string text)
+        {
+            Append("\n· " + text + "\n");
         }
 
         private void SetStatus(string text)
