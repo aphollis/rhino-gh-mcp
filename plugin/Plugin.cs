@@ -117,15 +117,17 @@ namespace RhinoMcp
         private static readonly int[] IconSizes = { 16, 20, 24, 32, 40, 48, 64 };
 
         /// <summary>
-        /// Build a real multi-resolution .ico (PNG frames) instead of using
-        /// Bitmap.GetHicon(), whose transparency mask can come out fully blank
-        /// on a docked panel tab (which shows only the icon, no caption).
+        /// Build a real multi-resolution .ico using uncompressed 32-bit DIB
+        /// frames (not PNG, which GDI+ Icon.ToBitmap mis-decodes, and not
+        /// Bitmap.GetHicon, whose mask can come out fully blank on a docked tab
+        /// that shows only the icon). DIB frames decode correctly both natively
+        /// and through GDI+.
         /// </summary>
         public static System.Drawing.Icon Create()
         {
             var frames = new byte[IconSizes.Length][];
             for (int i = 0; i < IconSizes.Length; i++)
-                frames[i] = RenderPng(IconSizes[i]);
+                frames[i] = RenderDibFrame(IconSizes[i]);
 
             using (var ms = new MemoryStream())
             {
@@ -144,8 +146,8 @@ namespace RhinoMcp
                     bw.Write((byte)0);                    // reserved
                     bw.Write((short)1);                   // color planes
                     bw.Write((short)32);                  // bits per pixel
-                    bw.Write(frames[i].Length);           // bytes of PNG data
-                    bw.Write(offset);                     // offset to PNG data
+                    bw.Write(frames[i].Length);           // bytes in resource
+                    bw.Write(offset);                     // offset to frame
                     offset += frames[i].Length;
                 }
                 foreach (var f in frames)
@@ -157,7 +159,9 @@ namespace RhinoMcp
             }
         }
 
-        private static byte[] RenderPng(int size)
+        /// <summary>Render one icon frame as an uncompressed 32bpp DIB
+        /// (BITMAPINFOHEADER + bottom-up BGRA pixels + a zero AND mask).</summary>
+        private static byte[] RenderDibFrame(int size)
         {
             using (var bmp = new System.Drawing.Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
             {
@@ -187,9 +191,39 @@ namespace RhinoMcp
                         }
                     }
                 }
+
+                int maskRow = ((size + 31) / 32) * 4; // 1bpp AND mask, dword-aligned
                 using (var ms = new MemoryStream())
                 {
-                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    var bw = new BinaryWriter(ms);
+                    // BITMAPINFOHEADER: height is doubled (XOR image + AND mask).
+                    bw.Write(40);                 // biSize
+                    bw.Write(size);               // biWidth
+                    bw.Write(size * 2);           // biHeight (XOR + AND)
+                    bw.Write((short)1);           // biPlanes
+                    bw.Write((short)32);          // biBitCount
+                    bw.Write(0);                  // biCompression = BI_RGB
+                    bw.Write(0);                  // biSizeImage
+                    bw.Write(0);                  // biXPelsPerMeter
+                    bw.Write(0);                  // biYPelsPerMeter
+                    bw.Write(0);                  // biClrUsed
+                    bw.Write(0);                  // biClrImportant
+
+                    // XOR pixels, bottom-up, BGRA.
+                    for (int y = size - 1; y >= 0; y--)
+                        for (int x = 0; x < size; x++)
+                        {
+                            var px = bmp.GetPixel(x, y);
+                            bw.Write(px.B);
+                            bw.Write(px.G);
+                            bw.Write(px.R);
+                            bw.Write(px.A);
+                        }
+                    // AND mask all zero: alpha channel governs transparency.
+                    for (int y = 0; y < size; y++)
+                        bw.Write(new byte[maskRow]);
+
+                    bw.Flush();
                     return ms.ToArray();
                 }
             }
