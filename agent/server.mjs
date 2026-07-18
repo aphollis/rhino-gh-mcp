@@ -255,6 +255,13 @@ const server = http.createServer(async (req, res) => {
     res.end("ok");
     return;
   }
+  if (req.url === "/shutdown") {
+    // Lets a newer server (fresh code) evict a stale one holding the port.
+    res.writeHead(200);
+    res.end("bye");
+    setTimeout(() => process.exit(0), 100);
+    return;
+  }
   if (req.method === "GET" && req.url === "/sessions") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(listSessions()));
@@ -409,6 +416,26 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+let bindRetries = 0;
+function startListening() {
+  server.listen(PORT, "127.0.0.1");
+}
+server.on("listening", () => {
   console.log(`rhino-gh-mcp agent server listening on 127.0.0.1:${PORT}`);
 });
+server.on("error", (e) => {
+  if (e.code === "EADDRINUSE" && bindRetries < 3) {
+    // A stale server (possibly older code) holds the port. Tell it to shut
+    // down, then take over — the freshest code always wins the port.
+    bindRetries++;
+    console.error(`port ${PORT} busy; evicting stale server (attempt ${bindRetries})`);
+    const req = http.request({ host: "127.0.0.1", port: PORT, path: "/shutdown", method: "POST" });
+    req.on("error", () => {});
+    req.end();
+    setTimeout(startListening, 800);
+  } else {
+    console.error("agent server error:", e.message);
+    process.exit(1);
+  }
+});
+startListening();
