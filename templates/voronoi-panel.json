@@ -12,9 +12,9 @@
       { "key": "width", "type": "slider", "min": 5, "max": 200, "value": 50, "nickname": "Width" },
       { "key": "depth", "type": "slider", "min": 5, "max": 200, "value": 50, "nickname": "Depth" },
       { "key": "count", "type": "slider", "min": 3, "max": 300, "value": 40, "integer": true, "nickname": "Count" },
-      { "key": "rect", "type": "Rectangle" },
-      { "key": "pop", "type": "Populate 2D" },
-      { "key": "voronoi", "type": "Voronoi" }
+      { "key": "rect", "type": "d93100b6-d50b-40b2-831a-814659dc38e3", "note": "Rectangle (Curve>Primitive)" },
+      { "key": "pop", "type": "e2d958e8-9f08-44f7-bf47-a684882d0b2a", "note": "Populate 2D (Vector>Grid)" },
+      { "key": "voronoi", "type": "a4011be0-1c91-45bd-8280-17dd3a9f46f1", "note": "Voronoi (Mesh>Triangulation)" }
     ],
     "connections": [
       { "from": "width", "to": "rect", "to_param": "X Size" },

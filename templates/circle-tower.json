@@ -10,9 +10,9 @@
     "components": [
       { "key": "radius", "type": "slider", "min": 1, "max": 50, "value": 8, "nickname": "Radius" },
       { "key": "height", "type": "slider", "min": 1, "max": 100, "value": 30, "nickname": "Height" },
-      { "key": "circle", "type": "Circle" },
-      { "key": "dir", "type": "Unit Z" },
-      { "key": "tower", "type": "Extrude" }
+      { "key": "circle", "type": "807b86e3-be8d-4970-92b5-f8cdcb45b06b", "note": "Circle (Curve>Primitive)" },
+      { "key": "dir", "type": "9103c240-a6a9-4223-9b42-dbd19bf38e2b", "note": "Unit Z (Vector)" },
+      { "key": "tower", "type": "962034e9-cc27-4394-afc4-5c16e3447cf9", "note": "Extrude (Surface>Freeform)" }
     ],
     "connections": [
       { "from": "radius", "to": "circle", "to_param": "Radius" },

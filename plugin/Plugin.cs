@@ -113,47 +113,86 @@ namespace RhinoMcp
         private static readonly float[] Lengths =
             { 1.00f, 0.62f, 0.90f, 0.55f, 0.90f, 0.62f, 1.00f, 0.62f, 0.90f, 0.55f, 0.90f, 0.62f };
 
-        public static System.Drawing.Icon Create(int size = 32)
+        // Sizes packed into the .ico so Rhino renders a crisp tab icon at any DPI.
+        private static readonly int[] IconSizes = { 16, 20, 24, 32, 40, 48, 64 };
+
+        /// <summary>
+        /// Build a real multi-resolution .ico (PNG frames) instead of using
+        /// Bitmap.GetHicon(), whose transparency mask can come out fully blank
+        /// on a docked panel tab (which shows only the icon, no caption).
+        /// </summary>
+        public static System.Drawing.Icon Create()
         {
-            var bmp = new System.Drawing.Bitmap(size, size);
-            using (var g = System.Drawing.Graphics.FromImage(bmp))
+            var frames = new byte[IconSizes.Length][];
+            for (int i = 0; i < IconSizes.Length; i++)
+                frames[i] = RenderPng(IconSizes[i]);
+
+            using (var ms = new MemoryStream())
             {
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                g.Clear(System.Drawing.Color.Transparent);
+                var bw = new BinaryWriter(ms);
+                bw.Write((short)0);                       // reserved
+                bw.Write((short)1);                       // type = icon
+                bw.Write((short)IconSizes.Length);        // image count
 
-                float cx = size / 2f, cy = size / 2f;
-                float inner = size * 0.10f;
-                float outer = size * 0.46f;
-                float width = size * 0.11f;
-
-                using (var pen = new System.Drawing.Pen(Terracotta, width))
+                int offset = 6 + 16 * IconSizes.Length;   // dir header + entries
+                for (int i = 0; i < IconSizes.Length; i++)
                 {
-                    pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                    pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                    for (int i = 0; i < Angles.Length; i++)
-                    {
-                        double a = Angles[i] * Math.PI / 180.0;
-                        float len = inner + (outer - inner) * Lengths[i];
-                        float x1 = cx + (float)Math.Cos(a) * inner;
-                        float y1 = cy - (float)Math.Sin(a) * inner;
-                        float x2 = cx + (float)Math.Cos(a) * len;
-                        float y2 = cy - (float)Math.Sin(a) * len;
-                        g.DrawLine(pen, x1, y1, x2, y2);
-                    }
+                    int s = IconSizes[i];
+                    bw.Write((byte)(s >= 256 ? 0 : s));   // width
+                    bw.Write((byte)(s >= 256 ? 0 : s));   // height
+                    bw.Write((byte)0);                    // palette
+                    bw.Write((byte)0);                    // reserved
+                    bw.Write((short)1);                   // color planes
+                    bw.Write((short)32);                  // bits per pixel
+                    bw.Write(frames[i].Length);           // bytes of PNG data
+                    bw.Write(offset);                     // offset to PNG data
+                    offset += frames[i].Length;
                 }
+                foreach (var f in frames)
+                    bw.Write(f);
+
+                bw.Flush();
+                ms.Position = 0;
+                return new System.Drawing.Icon(ms);
             }
-            var hicon = bmp.GetHicon();
-            var icon = (System.Drawing.Icon)System.Drawing.Icon.FromHandle(hicon).Clone();
-            NativeMethods.DestroyIcon(hicon);
-            bmp.Dispose();
-            return icon;
         }
 
-        private static class NativeMethods
+        private static byte[] RenderPng(int size)
         {
-            [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-            [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-            public static extern bool DestroyIcon(IntPtr handle);
+            using (var bmp = new System.Drawing.Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.Clear(System.Drawing.Color.Transparent);
+
+                    float cx = size / 2f, cy = size / 2f;
+                    float inner = size * 0.10f;
+                    float outer = size * 0.46f;
+                    float width = Math.Max(1.4f, size * 0.12f);
+
+                    using (var pen = new System.Drawing.Pen(Terracotta, width))
+                    {
+                        pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                        pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                        for (int i = 0; i < Angles.Length; i++)
+                        {
+                            double a = Angles[i] * Math.PI / 180.0;
+                            float len = inner + (outer - inner) * Lengths[i];
+                            float x1 = cx + (float)Math.Cos(a) * inner;
+                            float y1 = cy - (float)Math.Sin(a) * inner;
+                            float x2 = cx + (float)Math.Cos(a) * len;
+                            float y2 = cy - (float)Math.Sin(a) * len;
+                            g.DrawLine(pen, x1, y1, x2, y2);
+                        }
+                    }
+                }
+                using (var ms = new MemoryStream())
+                {
+                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    return ms.ToArray();
+                }
+            }
         }
     }
 }
