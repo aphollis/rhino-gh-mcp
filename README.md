@@ -93,11 +93,13 @@ port from the default 8765.
 | `gh_launch` / `gh_status` | Start Grasshopper / check it's running |
 | `gh_search_components` | Find components in the installed library |
 | `gh_component_info` | Inspect a component's input/output params |
-| `gh_build_recipe` | **Build a whole definition in one call** (auto-layout + wiring + solve + error report) |
+| `gh_build_recipe` | **Build a whole definition in one call** (auto-layout + wiring + solve + error report). Idempotent by key. |
+| `gh_list_templates` / `gh_apply_template` | List and apply proven parametric templates with parameter overrides |
+| `gh_edit` | Batch set/connect/disconnect/delete in one call (one solve) |
 | `gh_add_component` | Add one component (slider/panel/toggle/valuelist/button or any library component) |
 | `gh_connect` / `gh_disconnect` | Wire / unwire params |
 | `gh_set_value` | Change slider/panel/toggle/valuelist values |
-| `gh_get_canvas` | Full canvas state: objects, wires, values, errors |
+| `gh_get_canvas` | Canvas state; `detail`: summary (default) / problems / full |
 | `gh_get_output` | Read computed data from any output |
 | `gh_recompute` | Re-solve the definition |
 | `gh_new_document` / `gh_save` / `gh_open` | Document management |
@@ -132,6 +134,28 @@ A single `gh_build_recipe` call like:
 
 produces a live parametric circle-extrusion with two sliders, laid out left-to-right,
 and reports any per-component errors.
+
+## Efficiency features
+
+The server is tuned to keep agent token usage low (see `docs/EFFICIENCY_PLAN.md`):
+
+- **Component reference** (`docs/gh_reference.json`) is baked into the cached
+  system prompt, so the agent rarely calls `gh_component_info`. Regenerate/extend
+  it against your exact install with `node tools/gen_reference.mjs` (Rhino open).
+- **All tools preloaded** (`alwaysLoad`) — no per-session `ToolSearch` round-trip.
+- **Short handles** — components are addressed by keys (`r`, `c`) not 36-char GUIDs.
+- **Idempotent builds** — re-running `gh_build_recipe` with the same keys updates
+  in place instead of duplicating.
+- **Lean reads** — `gh_get_canvas` defaults to a compact summary.
+- **Templates** — apply proven definitions instead of regenerating them.
+- **Auto model routing** — the panel's "Auto" mode uses a fast model for
+  mechanical edits and a stronger one for design work.
+
+### Benchmarking
+
+`node bench/run.mjs` runs a fixed set of prompts and reports turns/tools/cost;
+per-request metrics are appended to `agent/metrics.jsonl`. Use it to compare
+before/after any change. Requires the agent server running and Rhino open.
 
 ## Requirements
 
