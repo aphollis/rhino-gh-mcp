@@ -22,9 +22,15 @@ Typical Grasshopper recipe workflow:
    Rhino document, rhino_capture_viewport to see the result.
 
 Notes:
-- Components are identified by the instance id returned when they are created.
+- Components are addressed by a short HANDLE (e.g. "r", "c") returned when they
+  are created, or by their full instance id/GUID. Prefer handles: gh_build_recipe
+  keys and gh_add keys become handles you can pass to gh_connect/gh_set_value/
+  gh_get_output/gh_bake. Handles reset when the document is cleared or replaced.
 - Param names accept full name, nickname, or 0-based index. If a component has
-  a single input/output the param can be omitted.
+  a single input/output the param can be omitted. On a wrong param name the tool
+  returns the available param names, so you can correct without gh_component_info.
+- gh_build_recipe is idempotent by key: re-running with the same keys updates
+  those components in place instead of creating duplicates.
 - "slider", "panel", "toggle", "valuelist", "button" are accepted as component
   types for the standard input objects; everything else is resolved against the
   installed component library by name or GUID.
@@ -194,6 +200,7 @@ server.registerTool(
       "For building several components at once prefer gh_build_recipe.",
     inputSchema: {
       type: z.string().describe("Component name, GUID, or slider/panel/toggle/valuelist/button"),
+      key: z.string().optional().describe("Short handle to address this component later (auto-assigned if omitted)"),
       x: z.number().optional().describe("Canvas x position (default 100)"),
       y: z.number().optional().describe("Canvas y position (default 100)"),
       ...componentProps,
@@ -209,7 +216,7 @@ server.registerTool(
       "Set the value of an existing canvas object: slider number (optionally new min/max), panel text, " +
       "toggle boolean, value-list selection, or persistent data on a floating parameter.",
     inputSchema: {
-      id: z.string().describe("Instance id of the object"),
+      id: z.string().describe("Handle or instance id of the object"),
       value: z.union([z.number(), z.string(), z.boolean()]).describe("New value"),
       min: z.number().optional().describe("New slider minimum"),
       max: z.number().optional().describe("New slider maximum"),
@@ -226,9 +233,9 @@ server.registerTool(
       "index and can be omitted when the component has exactly one param on that side (sliders/panels " +
       "never need a param). Returns the target's runtime errors/warnings after solving.",
     inputSchema: {
-      from_id: z.string().describe("Source component instance id"),
+      from_id: z.string().describe("Source component handle or instance id"),
       from_param: z.string().optional().describe("Source output param (name or index)"),
-      to_id: z.string().describe("Target component instance id"),
+      to_id: z.string().describe("Target component handle or instance id"),
       to_param: z.string().optional().describe("Target input param (name or index)"),
     },
   },
@@ -241,9 +248,9 @@ server.registerTool(
     description:
       "Remove a wire from a target input. If from_id is omitted, removes ALL sources feeding that input.",
     inputSchema: {
-      to_id: z.string().describe("Target component instance id"),
+      to_id: z.string().describe("Target component handle or instance id"),
       to_param: z.string().optional().describe("Target input param (name or index)"),
-      from_id: z.string().optional().describe("Source component id; omit to clear all sources"),
+      from_id: z.string().optional().describe("Source component handle/id; omit to clear all sources"),
       from_param: z.string().optional().describe("Source output param"),
     },
   },
@@ -255,7 +262,7 @@ server.registerTool(
   {
     description: "Delete objects from the Grasshopper canvas by instance id.",
     inputSchema: {
-      ids: z.array(z.string()).min(1).describe("Instance ids to delete"),
+      ids: z.array(z.string()).min(1).describe("Handles or instance ids to delete"),
     },
   },
   async ({ ids }) => relay("gh.delete", { ids }),
@@ -280,7 +287,7 @@ server.registerTool(
       "Read the computed data of a component output (or floating param) as text, organised by data-tree " +
       "branch. Use to verify a recipe produces the expected numbers/geometry.",
     inputSchema: {
-      id: z.string().describe("Instance id"),
+      id: z.string().describe("Handle or instance id"),
       param: z.string().optional().describe("Output param name/index (default: first/only output)"),
       max_items: z.number().int().min(1).max(1000).optional().describe("Max items to return (default 50)"),
     },
@@ -337,7 +344,7 @@ server.registerTool(
       "Bake the geometry from a component output into the Rhino document (optionally onto a named layer) " +
       "so it becomes real, editable Rhino geometry.",
     inputSchema: {
-      id: z.string().describe("Instance id of the component/param to bake"),
+      id: z.string().describe("Handle or instance id of the component/param to bake"),
       param: z.string().optional().describe("Output param name/index (default: first/only output)"),
       layer: z.string().optional().describe("Layer name to bake onto (created if missing)"),
     },

@@ -112,12 +112,39 @@ def get_doc():
     return doc
 
 
+# Short stable handles: key -> InstanceGuid string. Lets the agent address
+# components by "r"/"c" instead of 36-char GUIDs. Reset on new/cleared docs.
+_HANDLES = {}
+
+
+def register_handle(key, guid):
+    if key:
+        _HANDLES[str(key)] = str(guid)
+
+
+def reset_handles():
+    _HANDLES.clear()
+
+
 def find_obj(doc, id_str):
-    target = System.Guid.Parse(str(id_str))
+    """Resolve an object by GUID or by a short handle key."""
+    s = str(id_str)
+    if s in _HANDLES:
+        s = _HANDLES[s]
+    try:
+        target = System.Guid.Parse(s)
+    except Exception:
+        raise RuntimeError(
+            "'%s' is not a known handle or GUID. Known handles: %s" %
+            (id_str, ", ".join(sorted(_HANDLES.keys())) or "(none)"))
     for o in doc.Objects:
         if o.InstanceGuid == target:
             return o
-    raise RuntimeError("No object with id %s on the canvas." % id_str)
+    # Stale handle (component was deleted): drop it so it stops resolving.
+    for k, v in list(_HANDLES.items()):
+        if v == s:
+            del _HANDLES[k]
+    raise RuntimeError("No object with id/handle %s on the canvas." % id_str)
 
 
 def messages(obj):
@@ -605,6 +632,13 @@ def cmd_gh_info(params):
     return run_on_ui(work)
 
 
+def _auto_key(doc):
+    n = 1
+    while ("c%d" % n) in _HANDLES:
+        n += 1
+    return "c%d" % n
+
+
 def cmd_gh_add(params):
     def work():
         doc = get_doc()
@@ -616,8 +650,12 @@ def cmd_gh_add(params):
         if not doc.AddObject(obj, False):
             raise RuntimeError("Grasshopper refused to add the object to the canvas.")
         apply_props(obj, params)
+        key = params.get("key") or _auto_key(doc)
+        register_handle(key, obj.InstanceGuid)
         doc.NewSolution(False)
-        return describe_obj(obj)
+        d = describe_obj(obj)
+        d["key"] = key
+        return d
 
     return run_on_ui(work)
 
@@ -690,7 +728,11 @@ def cmd_gh_delete(params):
         for id_str in ids:
             try:
                 obj = find_obj(doc, id_str)
+                guid = str(obj.InstanceGuid)
                 doc.RemoveObject(obj, False)
+                for k, v in list(_HANDLES.items()):
+                    if v == guid:
+                        del _HANDLES[k]
                 removed += 1
             except Exception:
                 pass
@@ -774,6 +816,7 @@ def cmd_gh_new(params):
         G.Instances.DocumentServer.AddDocument(doc)
         canvas.Document = doc
         doc.NewSolution(True)
+        reset_handles()
         return {"created": True}
 
     return run_on_ui(work)
@@ -877,6 +920,19 @@ def cmd_gh_build(params):
         if definition.get("clear"):
             for o in list(doc.Objects):
                 doc.RemoveObject(o, False)
+            reset_handles()
+
+        # Idempotency: if a key already maps to a live component, reuse it
+        # (update props + rewire) instead of creating a duplicate.
+        existing = {}
+        for c in comps:
+            key = c.get("key")
+            guid = _HANDLES.get(str(key)) if key else None
+            if guid:
+                try:
+                    existing[key] = find_obj(doc, key)
+                except Exception:
+                    pass
 
         # dataflow layout: column = longest path from any source
         col = {}
@@ -901,16 +957,22 @@ def cmd_gh_build(params):
                 build_errors.append("component missing 'key': %s" % json.dumps(c))
                 continue
             try:
-                obj = make_object(c.get("type"))
-                obj.CreateAttributes()
-                cc = col.get(key, 0)
-                slot = slots.get(cc, 0)
-                slots[cc] = slot + 1
-                x = float(c["x"]) if c.get("x") is not None else 80.0 + cc * 260.0
-                y = float(c["y"]) if c.get("y") is not None else 80.0 + slot * 130.0
-                obj.Attributes.Pivot = System.Drawing.PointF(x, y)
-                doc.AddObject(obj, False)
-                apply_props(obj, c)
+                if key in existing:
+                    # Reuse the live component: update its editable props in place.
+                    obj = existing[key]
+                    apply_props(obj, c)
+                else:
+                    obj = make_object(c.get("type"))
+                    obj.CreateAttributes()
+                    cc = col.get(key, 0)
+                    slot = slots.get(cc, 0)
+                    slots[cc] = slot + 1
+                    x = float(c["x"]) if c.get("x") is not None else 80.0 + cc * 260.0
+                    y = float(c["y"]) if c.get("y") is not None else 80.0 + slot * 130.0
+                    obj.Attributes.Pivot = System.Drawing.PointF(x, y)
+                    doc.AddObject(obj, False)
+                    apply_props(obj, c)
+                    register_handle(key, obj.InstanceGuid)
                 made[key] = obj
             except Exception as e:
                 build_errors.append("component '%s': %s" % (key, e))
@@ -926,7 +988,9 @@ def cmd_gh_build(params):
                     raise RuntimeError("unknown target key '%s'" % tk)
                 sp = resolve_param(src, cn.get("from_param"), "output")
                 tp = resolve_param(tgt, cn.get("to_param"), "input")
-                tp.AddSource(sp)
+                # Avoid duplicate wires when re-running an idempotent build.
+                if sp not in list(tp.Sources):
+                    tp.AddSource(sp)
             except Exception as e:
                 build_errors.append("connection %s -> %s: %s" % (fk, tk, e))
 
