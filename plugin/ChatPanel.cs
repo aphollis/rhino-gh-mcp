@@ -65,6 +65,7 @@ namespace RhinoMcp
             _status = new Label { Text = "Ready.", Font = new Font(FontFamilies.Sans, 8f) };
 
             _model = new DropDown();
+            _model.Items.Add(new ListItem { Text = "Auto (route by task)", Key = "auto" });
             _model.Items.Add(new ListItem { Text = "Default model", Key = "" });
             _model.Items.Add(new ListItem { Text = "Fable 5", Key = "claude-fable-5" });
             _model.Items.Add(new ListItem { Text = "Opus 4.8", Key = "claude-opus-4-8" });
@@ -273,6 +274,9 @@ namespace RhinoMcp
             {
                 case "session":
                     _sessionId = (string)evt["sessionId"] ?? _sessionId;
+                    break;
+                case "routed":
+                    SetStatus("Auto-routed to " + (string)evt["model"] + "...");
                     break;
                 case "text":
                     Append("\nClaude: " + (string)evt["text"] + "\n");

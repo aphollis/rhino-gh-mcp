@@ -71,6 +71,23 @@ function summarize(input) {
   return s.length > 220 ? s.slice(0, 220) + "..." : s;
 }
 
+// Auto model routing: cheap model for mechanical edits, stronger for design.
+const ROUTE_FAST = "claude-haiku-4-5-20251001";
+const ROUTE_STRONG = "claude-sonnet-5";
+const MECHANICAL = /\b(set|change|adjust|tweak|update|rename|move|delete|remove|undo|redo|toggle|increase|decrease|bigger|smaller|value|slider|bake|capture|screenshot|show|open|save|clear|recompute)\b/i;
+const DESIGN = /\b(design|create|build|model|generate|make|parametric|facade|structure|pattern|lattice|surface|form|geometry)\b/i;
+
+/** Pick a model when the client asked for "auto"; otherwise honor its choice. */
+function routeModel(requested, message) {
+  if (requested && requested !== "auto") return requested;
+  if (!requested) return undefined; // "Default model" -> let the SDK decide
+  const m = message || "";
+  const short = m.length < 120;
+  if (DESIGN.test(m)) return ROUTE_STRONG;
+  if (MECHANICAL.test(m) && short) return ROUTE_FAST;
+  return ROUTE_STRONG;
+}
+
 const METRICS_PATH = path.join(__dirname, "metrics.jsonl");
 
 /** Append one per-request metrics record for benchmarking each phase. */
@@ -195,13 +212,17 @@ const server = http.createServer(async (req, res) => {
   const startedAt = Date.now();
 
   const prompt = buildPrompt(message, attachments, sessionId, send);
+  const routedModel = routeModel(model, message);
+  if (model === "auto" && routedModel) {
+    send({ type: "routed", model: routedModel });
+  }
 
   const q = query({
     prompt,
     options: {
       cwd: REPO,
       resume: sessionId || undefined,
-      ...(model ? { model } : {}),
+      ...(routedModel ? { model: routedModel } : {}),
       permissionMode: "bypassPermissions",
       disallowedTools: ["Bash", "Write", "Edit", "NotebookEdit"],
       mcpServers: {
@@ -253,7 +274,7 @@ const server = http.createServer(async (req, res) => {
       } else if (msg.type === "result") {
         recordMetrics({
           label: label || null,
-          model: model || "default",
+          model: routedModel || "default",
           turns: msg.num_turns,
           toolCalls,
           toolCounts,

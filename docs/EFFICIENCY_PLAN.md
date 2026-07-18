@@ -129,6 +129,21 @@ Per-turn cost and long-session context control.
 
 ---
 
+## Implementation status (2026-07-17)
+
+Phases 0–5 implemented and committed. Verified where possible without a full
+live Rhino session (metrics baseline captured; `alwaysLoad`/no-ToolSearch
+confirmed live; listener syntax-checked with Rhino's CPython 3.9; template and
+routing logic unit-checked). Full end-to-end live verification happens at the
+plugin rebuild.
+
+- **Subagent routing (Phase 5)** was deferred: the in-Rhino panel doesn't surface
+  MCP prompts or Task delegation, and spawning subagents that re-open the MCP
+  server adds risk for little gain at current session sizes. Revisit if sessions
+  grow long. Auto model routing and image returns cover the rest of Phase 5.
+- **MCP Prompts (Phase 4)** likewise deferred — same reason (custom panel, not a
+  generic MCP client). Templates deliver the reuse win instead.
+
 ## Recommended sequence
 
 `0 → 1 → 2 → 3 → 4 → 5`.
