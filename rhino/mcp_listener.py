@@ -1006,10 +1006,19 @@ class Listener(object):
                 conn, _ = self.sock.accept()
             except Exception:
                 break
-            try:
-                self._serve(conn)
-            except Exception:
-                pass
+            # Handle each client on its own thread so that a persistent
+            # connection (the MCP server keeps one open) never blocks other
+            # clients. All Rhino work still serializes at the UI-thread
+            # boundary via run_on_ui, so this is safe.
+            t = threading.Thread(target=self._serve_safe, args=(conn,))
+            t.daemon = True
+            t.start()
+
+    def _serve_safe(self, conn):
+        try:
+            self._serve(conn)
+        except Exception:
+            pass
 
     def _serve(self, conn):
         buf = b""

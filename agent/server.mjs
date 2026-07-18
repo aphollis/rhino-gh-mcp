@@ -15,6 +15,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const PORT = Number(process.env.AGENT_PORT ?? 8766);
 
+/** Compact component reference, loaded once into the cached system prompt so
+ *  the agent rarely needs gh_component_info. Format: "Name: in(A,B) -> out(C)". */
+function loadReference() {
+  try {
+    const ref = JSON.parse(fs.readFileSync(path.join(REPO, "docs", "gh_reference.json"), "utf8"));
+    const lines = ref.components.map(
+      (c) => `${c.name}: in(${c.in.join(", ")}) -> out(${c.out.join(", ")})`,
+    );
+    const prims = Object.entries(ref.primitives).map(([k, v]) => `${k} = ${v}`);
+    return (
+      "\n\nComponent reference (exact param names for common components; " +
+      "use gh_component_info only for components NOT listed here, or if a wiring fails):\n" +
+      "Input primitives: " + prims.join(" | ") + "\n" +
+      lines.join("\n")
+    );
+  } catch {
+    return "";
+  }
+}
+
 const SYSTEM_APPEND = `
 You are embedded in Rhino 8 as a CAD/parametric-design assistant, chatting with
 the user through a small panel inside Rhino. The rhino-grasshopper MCP tools
@@ -23,14 +43,14 @@ drive the very Rhino instance the user is looking at.
 Guidelines:
 - For Grasshopper work prefer gh_build_recipe to create whole definitions in
   one call; verify with gh_get_canvas and fix any errors it reports.
-- Use gh_search_components / gh_component_info when unsure of component or
-  parameter names - do not guess.
+- Prefer the component reference below for param names; only call
+  gh_component_info for components not listed there, or if a wiring fails.
 - Keep chat replies short; the user can see the canvas and viewport, so
   describe what you built and any sliders they can play with.
 - Use rhino_capture_viewport to check visual results after baking or modeling.
 - rhino_execute_python runs inside the user's live Rhino session: be careful
   with destructive operations and never delete user geometry unless asked.
-`.trim();
+`.trim() + loadReference();
 
 function summarize(input) {
   let s;
@@ -180,6 +200,9 @@ const server = http.createServer(async (req, res) => {
           type: "stdio",
           command: process.execPath,
           args: [path.join(REPO, "dist", "index.js")],
+          // Include all tools in the turn-1 (cached) prompt instead of making
+          // the agent ToolSearch for them each session.
+          alwaysLoad: true,
         },
       },
       systemPrompt: {
