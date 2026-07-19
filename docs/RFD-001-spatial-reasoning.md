@@ -152,6 +152,26 @@ tools:
 
 Success = higher answer accuracy and/or fewer turns vs. screenshot-only.
 
+## 8b. Addendum (2026-07-19): external-review takeaways
+
+From comparing against an external (Gemini) design sketch for a Fusion spatial
+MCP server:
+
+- **Backlog — `space_fit` (placement/free-space query):** the inverse of our
+  measurement tools — "find coordinates where a WxDxH part fits with N
+  clearance." Buildable on the existing voxel/BVH infra (empty-region search).
+  High value for assembly workflows.
+- **M5 note — Fusion API units:** the Fusion API is ALWAYS centimeters
+  internally regardless of document display units; the adapter must convert
+  explicitly (pairs with the Y-up caveat in §4 conventions).
+- **M5 note — prior art:** survey Autodesk's official Fusion MCP effort and
+  community servers (e.g. Joe-Spencer/fusion-mcp-server) before building the
+  adapter; reuse add-in bootstrap learnings.
+- **Rejected:** routing spatial reasoning through a dedicated neural "spatial
+  reasoning model" that emits coordinate blueprints. Our deterministic
+  compute-in-core approach (exact kernel props + BVH) answers the same needs
+  without a second hallucination-capable model in the loop; benchmark 6/6.
+
 ## 9. Milestones
 
 | # | Deliverable | Contents |
