@@ -4,3 +4,5 @@ bin/
 obj/
 *.log
 agent/metrics.jsonl
+__pycache__/
+*.pyc
