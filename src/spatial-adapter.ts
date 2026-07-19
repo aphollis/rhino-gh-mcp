@@ -3,7 +3,8 @@ import { RhinoBridge } from "./bridge.js";
 
 /**
  * GeometryAdapter over the Rhino listener's space.* wire commands
- * (spatial/PROTOCOL.md §1). Decodes base64 mesh buffers into typed arrays.
+ * (PROTOCOL.md §1 in the spatial-core package). Decodes base64 mesh
+ * buffers into typed arrays.
  */
 export class RhinoGeometryAdapter implements GeometryAdapter {
   constructor(private bridge: RhinoBridge) {}
