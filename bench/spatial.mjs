@@ -20,23 +20,52 @@ const AGENT_PORT = Number(process.env.AGENT_PORT ?? 8766);
 //  - cylinder @ [100,0,0]: r=3, h=47.5             -> tallest, furthest +X
 const SETUP_PY = `
 import rhinoscriptsyntax as rs
+import Rhino
+import scriptcontext as sc
+
+# Bench doc is disposable: clear previous bench geometry for idempotent setup.
 rs.EnableRedraw(False)
-ids = []
-ids.append(rs.AddSphere([0,0,0], 5))
-ids.append(rs.AddSphere([30,0,0], 5))
-outer = rs.AddBox([[50,-10,0],[70,-10,0],[70,10,0],[50,10,0],[50,-10,20],[70,-10,20],[70,10,20],[50,10,20]])
-inner = rs.AddBox([[52,-8,2],[68,-8,2],[68,8,2],[52,8,2],[52,-8,18],[68,-8,18],[68,8,18],[52,8,18]])
-hollow = rs.BooleanDifference([outer],[inner])
+rs.DeleteObjects(rs.AllObjects())
+
+created = []
+created.append(rs.AddSphere([0,0,0], 5))
+created.append(rs.AddSphere([30,0,0], 5))
+
+# Hollow box as a closed mesh: outer 20^3 shell + inverted 16^3 inner shell.
+# Deterministic (no boolean engine), volume = outer - inner automatically.
+def boxmesh(cx, cy, cz, s):
+    bb = Rhino.Geometry.BoundingBox(
+        Rhino.Geometry.Point3d(cx - s/2.0, cy - s/2.0, cz - s/2.0),
+        Rhino.Geometry.Point3d(cx + s/2.0, cy + s/2.0, cz + s/2.0))
+    box = Rhino.Geometry.Box(bb)
+    return Rhino.Geometry.Mesh.CreateFromBox(box, 1, 1, 1)
+
+outer = boxmesh(60, 0, 10, 20.0)
+inner = boxmesh(60, 0, 10, 16.0)
+inner.Flip(True, True, True)
+outer.Append(inner)
+if not outer.IsClosed:
+    raise RuntimeError("hollow box mesh is not closed")
+hollow_id = sc.doc.Objects.AddMesh(outer)
+if str(hollow_id) == "00000000-0000-0000-0000-000000000000":
+    raise RuntimeError("failed to add hollow box mesh")
+created.append(hollow_id)
+
 cyl = rs.AddCylinder(rs.WorldXYPlane(), 47.5, 3)
 rs.MoveObject(cyl, [100,0,0])
+created.append(cyl)
 rs.EnableRedraw(True)
-result = "bench geometry created"
+
+count = len([c for c in created if c])
+if count != 4:
+    raise RuntimeError("expected 4 bench bodies, created %d" % count)
+result = "bench geometry created: 4 bodies"
 `;
 
 const TASKS = [
   { id: "sp-tallest", q: "What is the height (Z extent) of the tallest object in the Rhino document? Give a number.", expect: (t) => near(t, 47.5, 1) },
   { id: "sp-clearance", q: "Do the two spheres in the document collide? If not, what is the clearance between them? Give a number.", expect: (t) => near(t, 20, 1) },
-  { id: "sp-hollow", q: "Is the box-shaped object near x=60 hollow or solid inside? Answer 'hollow' or 'solid'.", expect: (t) => /hollow/i.test(t) && !/\bsolid\b(?![\s\S]*hollow)/i.test(t) },
+  { id: "sp-hollow", q: "Is the box-shaped object near x=60 hollow or solid inside? Answer 'hollow' or 'solid'.", expect: (t) => { const m = t.match(/\b(hollow|solid)\b/i); return !!m && m[1].toLowerCase() === "hollow"; } },
   { id: "sp-wall", q: "What is the wall thickness of the box-shaped shell near x=60? Give a number.", expect: (t) => near(t, 2, 0.4) },
   { id: "sp-furthest", q: "Which object's center is furthest along the +X axis: a sphere, the box shell, or the cylinder?", expect: (t) => /cylinder/i.test(t) },
   { id: "sp-envelope", q: "Would the cylinder fit inside a 10 x 10 x 50 box (axis-aligned)? Answer yes or no.", expect: (t) => /\byes\b/i.test(t) },
@@ -103,8 +132,10 @@ async function main() {
     console.log(" ", r.result || r.stdout || "done");
   }
   if (mode === "run" || mode === "all") {
+    const filter = process.argv[3];
+    const tasks = filter ? TASKS.filter((t) => t.id.includes(filter)) : TASKS;
     let pass = 0;
-    for (const task of TASKS) {
+    for (const task of tasks) {
       process.stdout.write(`${task.id}... `);
       const { answer, done, error } = await chat(task);
       if (error) { console.log(`ERROR ${error}`); continue; }
@@ -113,7 +144,7 @@ async function main() {
       console.log(`${ok ? "PASS" : "FAIL"}  ($${(done?.cost ?? 0).toFixed(3)}, ${done?.toolCalls ?? "?"} tools)`);
       if (!ok) console.log(`    answer was: ${answer.trim().slice(0, 300)}`);
     }
-    console.log(`\n${pass}/${TASKS.length} spatial tasks passed`);
+    console.log(`\n${pass}/${tasks.length} spatial tasks passed`);
   }
 }
 
