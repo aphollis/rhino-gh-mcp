@@ -1645,6 +1645,25 @@ MUTATING_METHODS = set([
 # TCP server
 # --------------------------------------------------------------------------- #
 
+# The listening socket is a .NET Socket stored in AppDomain data. Rationale:
+# each script (re)execution gets a fresh Python scope, so a later run has no
+# reference to the previous listener socket - and a zombie listener (dead
+# accept thread, handle still bound) ignores the polite TCP shutdown. The
+# AppDomain is process-global and runtime-agnostic (IronPython and CPython
+# both see the same .NET object), so every startup can FORCE-CLOSE its
+# predecessor's socket before binding. This is what makes McpListenerRestart
+# reliable without restarting Rhino.
+APPDOMAIN_SOCKET_KEY = "rhino_gh_mcp_listener_socket"
+
+for _asm in ("System", "System.Net.Sockets", "System.Net.Primitives"):
+    try:
+        clr.AddReference(_asm)
+    except Exception:
+        pass
+
+_NL_BYTE = System.Byte(10)
+
+
 class Listener(object):
     def __init__(self, host, port):
         self.host = host
@@ -1653,19 +1672,31 @@ class Listener(object):
         self.sock = None
 
     def start(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Deliberately NO SO_REUSEADDR: on Windows it lets a new socket bind
-        # alongside a zombie listener (dead accept thread, socket still bound),
-        # and connections then land in the zombie's queue - a silent deafness
-        # that looks like a successful restart. Without it, a zombie makes
-        # bind() fail loudly so the user knows to restart Rhino.
+        domain = System.AppDomain.CurrentDomain
+        prev = domain.GetData(APPDOMAIN_SOCKET_KEY)
+        if prev is not None:
+            try:
+                prev.Close()
+                print("rhino-gh-mcp: force-closed previous listener socket")
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+        NS = System.Net.Sockets
+        self.sock = NS.Socket(NS.AddressFamily.InterNetwork,
+                              NS.SocketType.Stream,
+                              NS.ProtocolType.Tcp)
+        # Still no SO_REUSEADDR: with the force-close above a stuck port now
+        # means something OUTSIDE this process owns it - fail loudly.
         try:
-            self.sock.bind((self.host, self.port))
+            self.sock.Bind(System.Net.IPEndPoint(
+                System.Net.IPAddress.Parse(self.host), self.port))
         except Exception:
             raise RuntimeError(
-                "Port %d is stuck (a previous listener socket was not "
-                "released). Close and reopen Rhino to clear it." % self.port)
-        self.sock.listen(4)
+                "Port %d is unavailable (another process may own it). "
+                "Check with: netstat -ano | findstr :%d" % (self.port, self.port))
+        self.sock.Listen(4)
+        domain.SetData(APPDOMAIN_SOCKET_KEY, self.sock)
         t = threading.Thread(target=self._accept_loop)
         t.daemon = True
         t.start()
@@ -1673,14 +1704,22 @@ class Listener(object):
     def shutdown(self):
         self.stop_flag = True
         try:
-            self.sock.close()
+            domain = System.AppDomain.CurrentDomain
+            # Equality (not `is`): runtime wrappers around the same .NET object
+            # can be distinct Python objects; == dispatches to reference-equals.
+            if self.sock is not None and domain.GetData(APPDOMAIN_SOCKET_KEY) == self.sock:
+                domain.SetData(APPDOMAIN_SOCKET_KEY, None)
+        except Exception:
+            pass
+        try:
+            self.sock.Close()
         except Exception:
             pass
 
     def _accept_loop(self):
         while not self.stop_flag:
             try:
-                conn, _ = self.sock.accept()
+                conn = self.sock.Accept()
             except Exception:
                 break
             # Handle each client on its own thread so that a persistent
@@ -1698,31 +1737,50 @@ class Listener(object):
             pass
 
     def _serve(self, conn):
-        buf = b""
+        # .NET-socket I/O with byte-level newline framing (UTF-8 payloads may
+        # split multi-byte chars across Receive calls, so decode per line).
+        stream = System.IO.MemoryStream()
+        buf = System.Array.CreateInstance(System.Byte, 65536)
         try:
             while not self.stop_flag:
-                chunk = conn.recv(65536)
-                if not chunk:
+                try:
+                    n = conn.Receive(buf)
+                except Exception:
                     break
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    if not line.strip():
-                        continue
-                    try:
-                        payload = line.decode("utf-8")
-                    except Exception:
-                        payload = line
-                    reply = self._handle(payload)
-                    if reply is not None:
-                        conn.sendall((reply + "\n").encode("utf-8"))
-                    if self.stop_flag:
-                        return
+                if n == 0:
+                    break
+                stream.Write(buf, 0, n)
+
+                data = stream.ToArray()
+                total = data.Length
+                start = 0
+                while True:
+                    idx = System.Array.IndexOf(data, _NL_BYTE, start)
+                    if idx < 0:
+                        break
+                    if idx > start:
+                        payload = System.Text.Encoding.UTF8.GetString(
+                            data, start, idx - start).strip()
+                    else:
+                        payload = ""
+                    start = idx + 1
+                    if payload:
+                        reply = self._handle(payload)
+                        if reply is not None:
+                            out = System.Text.Encoding.UTF8.GetBytes(reply + "\n")
+                            conn.Send(out)
+                        if self.stop_flag:
+                            return
+                if start > 0:
+                    remainder = total - start
+                    stream.SetLength(0)
+                    if remainder > 0:
+                        stream.Write(data, start, remainder)
         except Exception:
             pass
         finally:
             try:
-                conn.close()
+                conn.Close()
             except Exception:
                 pass
 
