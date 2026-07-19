@@ -1628,9 +1628,18 @@ class Listener(object):
 
     def start(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((self.host, self.port))
-        self.sock.listen(1)
+        # Deliberately NO SO_REUSEADDR: on Windows it lets a new socket bind
+        # alongside a zombie listener (dead accept thread, socket still bound),
+        # and connections then land in the zombie's queue - a silent deafness
+        # that looks like a successful restart. Without it, a zombie makes
+        # bind() fail loudly so the user knows to restart Rhino.
+        try:
+            self.sock.bind((self.host, self.port))
+        except Exception:
+            raise RuntimeError(
+                "Port %d is stuck (a previous listener socket was not "
+                "released). Close and reopen Rhino to clear it." % self.port)
+        self.sock.listen(4)
         t = threading.Thread(target=self._accept_loop)
         t.daemon = True
         t.start()
