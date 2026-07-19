@@ -524,6 +524,31 @@ def cmd_rhino_capture(params):
     return run_on_ui(work, timeout=120)
 
 
+def cmd_rhino_selection(params):
+    """Currently selected Rhino objects - lets the agent resolve 'this part'."""
+    def work():
+        doc = Rhino.RhinoDoc.ActiveDoc
+        out = []
+        for o in doc.Objects.GetSelectedObjects(False, False):
+            entry = {"id": safe_str(o.Id),
+                     "name": safe_str(o.Name),
+                     "type": o.ObjectType.ToString()}
+            try:
+                entry["layer"] = safe_str(doc.Layers[o.Attributes.LayerIndex].FullPath)
+            except Exception:
+                entry["layer"] = None
+            try:
+                b = o.Geometry.GetBoundingBox(True)
+                entry["bbox"] = {"min": [b.Min.X, b.Min.Y, b.Min.Z],
+                                 "max": [b.Max.X, b.Max.Y, b.Max.Z]}
+            except Exception:
+                pass
+            out.append(entry)
+        return {"count": len(out), "objects": out}
+
+    return run_on_ui(work)
+
+
 def cmd_gh_launch(params):
     def work():
         try:
@@ -1584,6 +1609,7 @@ HANDLERS = {
     "rhino.execute": cmd_rhino_execute,
     "rhino.scene": cmd_rhino_scene,
     "rhino.capture": cmd_rhino_capture,
+    "rhino.selection": cmd_rhino_selection,
     "gh.launch": cmd_gh_launch,
     "gh.status": cmd_gh_status,
     "gh.search": cmd_gh_search,

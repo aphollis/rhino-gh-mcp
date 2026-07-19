@@ -1,14 +1,14 @@
 import * as THREE from "three";
 import type {
-  BodyInfo, DigestResult, FitResult, GeometryAdapter, MeasureOp, RelationsResult,
-  SceneInfo, SectionResult, ViewsResult, VoxelsResult,
+  BodyInfo, DigestResult, FitResult, GeometryAdapter, MeasureOp, PickResult,
+  RelationsResult, SceneInfo, SectionResult, ViewsResult, VoxelsResult,
 } from "./types.js";
 import { MeshCache, type MeshedBody } from "./cache.js";
 import { enclosedBy, insideSolid } from "./inside.js";
 import { computeFit } from "./fit.js";
 import { computeVoxels } from "./voxels.js";
 import { computeSection } from "./section.js";
-import { renderViews } from "./views.js";
+import { pickPixel, renderViews } from "./views.js";
 import {
   bboxCenter, bboxDims, bboxGap, bboxInside, bboxUnion, deepRound, type Vec3,
 } from "./util.js";
@@ -219,5 +219,14 @@ export class SpatialEngine {
     const bbox = bboxUnion(items.map((it) => it.info.bbox));
     // legend numbers are already rounded during formatting; png must not be walked.
     return renderViews(items, bbox, scene.units, opts?.tile ?? 240);
+  }
+
+  /** Identify the body under a pixel of a space_views sheet (same ids + tile). */
+  async pick(opts: { px: number; py: number; ids?: string[]; tile?: number }): Promise<PickResult> {
+    const scene = await this.adapter.bodies(undefined, opts.ids);
+    const items = await this.meshed(scene, scene.bodies);
+    if (items.length === 0) throw new Error("pick: no tessellatable bodies in scope");
+    const bbox = bboxUnion(items.map((it) => it.info.bbox));
+    return deepRound(pickPixel(items, bbox, opts.tile ?? 240, opts.px, opts.py));
   }
 }

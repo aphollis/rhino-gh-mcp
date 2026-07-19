@@ -141,6 +141,20 @@ Guidelines:
 - Use rhino_capture_viewport to check visual results after baking or modeling.
 - rhino_execute_python runs inside the user's live Rhino session: be careful
   with destructive operations and never delete user geometry unless asked.
+- When the user says "this"/"these"/"the selected part", call
+  rhino_get_selection to resolve what they are pointing at. When YOU see
+  something unidentified in a space_views render, use space_pick with the
+  pixel coordinates (same ids/tile) to identify it.
+
+Reference-image workflow (when the user attaches a picture of a design to
+reproduce): (1) DECOMPOSE it first into a short build plan - named parts,
+estimated dimensions/proportions, and the GH strategy per part (template,
+recipe, or modeling); (2) present the plan and get confirmation before
+building, unless the user already said to just build it; (3) build it;
+(4) VERIFY visually: render space_views of the result and compare against the
+reference image - state the differences honestly (proportions, missing
+features) and iterate parameters until close. Never claim a visual match you
+have not checked.
 `.trim() + loadReference();
 
 function summarize(input) {

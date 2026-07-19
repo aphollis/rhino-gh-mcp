@@ -10,6 +10,7 @@ export type {
   SectionResult,
   ViewsResult,
   FitResult,
+  PickResult,
 } from "./types.js";
 
 export { SpatialEngine } from "./engine.js";

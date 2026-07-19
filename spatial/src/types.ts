@@ -61,6 +61,18 @@ export interface SectionResult {
 
 export interface ViewsResult { png: Buffer; legend: string }
 
+export interface PickResult {
+  view: "top" | "front" | "right" | "iso";
+  pixel: [number, number];
+  tile: number;
+  hit: {
+    id: string;
+    name: string | null;
+    point: [number, number, number];
+    depth: number;
+  } | null;
+}
+
 export interface FitResult {
   fits: boolean;
   dims: [number, number, number];

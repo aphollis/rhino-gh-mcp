@@ -307,5 +307,29 @@ const engine = new SpatialEngine(new SyntheticAdapter());
     JSON.stringify(c0));
 }
 
+// --- pick (pixel identification on the views sheet)
+{
+  // Scene bbox: min [-10,-10,-10] max [75,10,10] -> center [32.5,0,0],
+  // radius = 0.5*hypot(85,20,20), ext = 1.15*radius. Compute the top-view
+  // pixel over world (0,0): the hollow box's top face should be hit there.
+  const tile = 240;
+  const radius = 0.5 * Math.hypot(85, 20, 20);
+  const ext = 1.15 * radius;
+  const px = Math.round(tile / 2 + (-32.5 / ext) * (tile / 2) - 0.5);
+  const py = Math.round(tile / 2 - (0 / ext) * (tile / 2) - 0.5);
+  const p = await engine.pick({ px, py });
+  check("pick view resolution", p.view === "top", `got ${p.view}`);
+  check("pick hits hollow box top", p.hit?.id === "hollow",
+    JSON.stringify(p.hit));
+  check("pick point on top face", p.hit && approx(p.hit.point[2], 10, 0.05),
+    JSON.stringify(p.hit?.point));
+
+  const bg = await engine.pick({ px: 2, py: 2 });
+  check("pick background is null", bg.hit === null, JSON.stringify(bg.hit));
+
+  const iso = await engine.pick({ px: tile + 5, py: tile + 5 });
+  check("pick iso quadrant name", iso.view === "iso", `got ${iso.view}`);
+}
+
 console.log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

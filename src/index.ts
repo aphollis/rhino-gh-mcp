@@ -95,6 +95,7 @@ async function relay(
 server.registerTool(
   "rhino_execute_python",
   {
+    annotations: { destructiveHint: true },
     description:
       "Run Python code inside Rhino 8 on the UI thread. Preloaded globals: Rhino (RhinoCommon), " +
       "rs (rhinoscriptsyntax), sc (scriptcontext), System, clr. Globals persist between calls. " +
@@ -110,6 +111,7 @@ server.registerTool(
 server.registerTool(
   "rhino_scene_info",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Summarize the active Rhino document: file path, model units, layers, and object counts by type.",
     inputSchema: {},
@@ -120,6 +122,7 @@ server.registerTool(
 server.registerTool(
   "rhino_capture_viewport",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Capture a Rhino viewport as a PNG image so you can see the current 3D scene. " +
       "Useful after baking Grasshopper geometry or running modeling code.",
@@ -149,6 +152,7 @@ server.registerTool(
 server.registerTool(
   "gh_launch",
   {
+    annotations: { idempotentHint: true },
     description: "Launch Grasshopper inside Rhino (no-op if already running). Call once before other gh_* tools.",
     inputSchema: {},
   },
@@ -158,6 +162,7 @@ server.registerTool(
 server.registerTool(
   "gh_status",
   {
+    annotations: { readOnlyHint: true },
     description: "Check whether Grasshopper is running and describe the active document (file, object count).",
     inputSchema: {},
   },
@@ -167,6 +172,7 @@ server.registerTool(
 server.registerTool(
   "gh_search_components",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Search the installed Grasshopper component library by name/description (e.g. 'extrude', 'voronoi', " +
       "'divide curve'). Returns name, category, description and GUID. Use the exact name or GUID when adding.",
@@ -181,6 +187,7 @@ server.registerTool(
 server.registerTool(
   "gh_component_info",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Inspect a component type before placing it: lists its input and output parameters " +
       "(names, nicknames, types, optionality). Accepts a component name or GUID.",
@@ -210,6 +217,7 @@ const componentProps = {
 server.registerTool(
   "gh_add_component",
   {
+    annotations: { destructiveHint: false },
     description:
       "Add one component to the Grasshopper canvas. Type is a library name/GUID, or one of the input " +
       "primitives: 'slider' (use min/max/value/integer), 'panel' (use text), 'toggle' (use value), " +
@@ -229,6 +237,7 @@ server.registerTool(
 server.registerTool(
   "gh_set_value",
   {
+    annotations: { destructiveHint: false, idempotentHint: true },
     description:
       "Set the value of an existing canvas object: slider number (optionally new min/max), panel text, " +
       "toggle boolean, value-list selection, or persistent data on a floating parameter.",
@@ -245,6 +254,7 @@ server.registerTool(
 server.registerTool(
   "gh_connect",
   {
+    annotations: { destructiveHint: false, idempotentHint: true },
     description:
       "Wire an output of one component into an input of another. Params accept name, nickname or 0-based " +
       "index and can be omitted when the component has exactly one param on that side (sliders/panels " +
@@ -262,6 +272,7 @@ server.registerTool(
 server.registerTool(
   "gh_disconnect",
   {
+    annotations: { destructiveHint: false },
     description:
       "Remove a wire from a target input. If from_id is omitted, removes ALL sources feeding that input.",
     inputSchema: {
@@ -277,6 +288,7 @@ server.registerTool(
 server.registerTool(
   "gh_delete_components",
   {
+    annotations: { destructiveHint: true },
     description: "Delete objects from the Grasshopper canvas by instance id.",
     inputSchema: {
       ids: z.array(z.string()).min(1).describe("Handles or instance ids to delete"),
@@ -288,6 +300,7 @@ server.registerTool(
 server.registerTool(
   "gh_get_canvas",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Get the state of the Grasshopper definition. detail='summary' (default) returns a compact " +
       "line per object (handle, type, nickname, and any errors/warnings) — cheap, use this first. " +
@@ -303,6 +316,7 @@ server.registerTool(
 server.registerTool(
   "gh_edit",
   {
+    annotations: { destructiveHint: true },
     description:
       "Apply a batch of edits to the canvas in ONE call, solving once at the end and reporting " +
       "per-op results plus any resulting errors. Prefer this over multiple gh_set_value/gh_connect " +
@@ -336,6 +350,7 @@ server.registerTool(
 server.registerTool(
   "gh_get_output",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Read the computed data of a component output (or floating param) as text, organised by data-tree " +
       "branch. Use to verify a recipe produces the expected numbers/geometry.",
@@ -351,6 +366,7 @@ server.registerTool(
 server.registerTool(
   "gh_recompute",
   {
+    annotations: { idempotentHint: true },
     description: "Recompute the Grasshopper solution. expire_all=true (default) forces every component to re-solve.",
     inputSchema: {
       expire_all: z.boolean().optional(),
@@ -362,6 +378,7 @@ server.registerTool(
 server.registerTool(
   "gh_new_document",
   {
+    annotations: { destructiveHint: true },
     description: "Create a fresh empty Grasshopper document and make it active on the canvas.",
     inputSchema: {},
   },
@@ -371,6 +388,7 @@ server.registerTool(
 server.registerTool(
   "gh_save",
   {
+    annotations: { idempotentHint: true },
     description: "Save the active Grasshopper definition to a .gh file.",
     inputSchema: {
       path: z.string().describe("Absolute path ending in .gh, e.g. C:\\\\Users\\\\me\\\\recipe.gh"),
@@ -382,6 +400,7 @@ server.registerTool(
 server.registerTool(
   "gh_open",
   {
+    annotations: { destructiveHint: true },
     description: "Open a .gh/.ghx file and make it the active document.",
     inputSchema: {
       path: z.string().describe("Absolute path to the Grasshopper file"),
@@ -393,6 +412,7 @@ server.registerTool(
 server.registerTool(
   "gh_bake",
   {
+    annotations: { destructiveHint: false },
     description:
       "Bake the geometry from a component output into the Rhino document (optionally onto a named layer) " +
       "so it becomes real, editable Rhino geometry.",
@@ -429,6 +449,7 @@ const recipeConnection = z.object({
 server.registerTool(
   "gh_build_recipe",
   {
+    annotations: { idempotentHint: true },
     description:
       "Build a whole Grasshopper definition (a 'recipe') in one call: places all components with automatic " +
       "left-to-right dataflow layout, applies slider/panel/toggle values, wires all connections, solves, and " +
@@ -470,6 +491,7 @@ function loadTemplates(): Template[] {
 server.registerTool(
   "gh_list_templates",
   {
+    annotations: { readOnlyHint: true },
     description:
       "List the built-in parametric templates (proven Grasshopper definitions). Apply one with " +
       "gh_apply_template instead of building common definitions from scratch — it is far cheaper and " +
@@ -489,6 +511,7 @@ server.registerTool(
 server.registerTool(
   "gh_apply_template",
   {
+    annotations: { idempotentHint: true },
     description:
       "Build one of the built-in templates on the canvas, optionally overriding its exposed parameters. " +
       "Use gh_list_templates first to see names and parameters. Returns the created component handles " +
@@ -549,6 +572,7 @@ const idsParam = z
 server.registerTool(
   "space_digest",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Metric inventory of the 3D scene: every body's kind, bounding box, overall dimensions, " +
       "kernel-exact volume/area/centroid, and units. Works on Rhino document objects AND Grasshopper " +
@@ -565,6 +589,7 @@ server.registerTool(
 server.registerTool(
   "space_measure",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Targeted spatial measurement. op='distance' (a,b): min distance + closest points between two " +
       "bodies. op='bbox' (ids): union bounding box + dims. op='dims' (id): one body's dimensions. " +
@@ -585,6 +610,7 @@ server.registerTool(
 server.registerTool(
   "space_relations",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Pairwise spatial relationships between bodies: clear (with clearance distance), intersects, " +
       "or containment (a_inside_b / b_inside_a). Use to check collisions, clearances, and nesting. " +
@@ -600,6 +626,7 @@ server.registerTool(
 server.registerTool(
   "space_voxels",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Volumetric occupancy of the scene as stacked ASCII layers ('#'=filled, '.'=empty) along an " +
       "axis — a 3D mental model you can reason over slice by slice. Reveals hollowness, mass " +
@@ -616,6 +643,7 @@ server.registerTool(
 server.registerTool(
   "space_section",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Cut the scene with a plane and return the profile loops with lengths, areas, and wall " +
       "thickness (when nested loops exist). The way to inspect internal structure: shells, " +
@@ -639,6 +667,7 @@ server.registerTool(
 server.registerTool(
   "space_fit",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Free-space/placement search: find axis-aligned positions where a box of given dimensions fits " +
       "with a clearance on all sides, avoiding existing geometry. Returns candidate placements (bbox + " +
@@ -678,6 +707,7 @@ server.registerTool(
 server.registerTool(
   "space_views",
   {
+    annotations: { readOnlyHint: true },
     description:
       "Neutral engineering multiview of the geometry: one PNG with four labeled orthographic tiles " +
       "(top / front / right / iso), depth-shaded with a scale grid, plus a text legend. Better than " +
@@ -700,6 +730,38 @@ server.registerTool(
       return errorResult(e);
     }
   },
+);
+
+server.registerTool(
+  "space_pick",
+  {
+    description:
+      "Identify what is under a pixel of the MOST RECENT space_views image (call with the SAME ids " +
+      "and tile as that space_views call). px/py are full-image coordinates (0..2*tile). Returns the " +
+      "quadrant name and the hit body id/name + 3D world point, or null for background. Use when you " +
+      "see something in a rendered view and need to know which body it is.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      px: z.number().int().min(0).describe("Pixel x in the full views image"),
+      py: z.number().int().min(0).describe("Pixel y in the full views image"),
+      ids: idsParam,
+      tile: z.number().int().min(120).max(480).optional().describe("Tile size used in the space_views call (default 240)"),
+    },
+  },
+  async ({ px, py, ids, tile }) => spatialCall(() => spatial.pick({ px, py, ids, tile })),
+);
+
+server.registerTool(
+  "rhino_get_selection",
+  {
+    description:
+      "List the objects the user currently has SELECTED in Rhino (id, name, type, layer, bbox). " +
+      "Call this whenever the user says 'this', 'these', 'the selected part' — it resolves what " +
+      "they are pointing at.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {},
+  },
+  async () => relay("rhino.selection"),
 );
 
 /* --------------------------------- main ----------------------------------- */

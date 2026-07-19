@@ -190,3 +190,15 @@ min(longestRegionAxis/res, minPaddedDim/2), builds a 3D summed-area table,
 and returns `FitResult` (types.ts): candidates sorted by distanceToTarget,
 totalPlacements, cellSize, and a note stating grid accuracy + the enclosed-
 cavity caveat. No new adapter surface needed.
+
+## 8. space_pick (steal-list, post-survey)
+
+`SpatialEngine.pick({px, py, ids?, tile?})` — identify the body under a pixel
+of a space_views sheet rendered with the SAME ids/tile (camera math is shared
+via cameraSetup/viewDefs/rayForPixel in views.ts, so they cannot drift).
+Returns `PickResult`: quadrant name, hit {id, name, world point, depth} or
+null. No new adapter surface needed.
+
+Wire contracts for the two adapter commands are checked in as JSON Schemas
+under `contracts/`; `tools/validate-protocol.mjs` is the adapter conformance
+suite (run it against any listener, Rhino or future Fusion).
