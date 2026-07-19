@@ -268,5 +268,44 @@ const engine = new SpatialEngine(new SyntheticAdapter());
   console.log(`wrote ${out}`);
 }
 
+// --- fit (free-space search)
+{
+  // Open space exists between the hollow box (ends x=10) and sphereA (starts x=35).
+  const f = await engine.fit({ dims: [6, 6, 6], clearance: 1, target: [22.5, 0, 0] });
+  check("fit finds placements", f.fits && f.totalPlacements > 0,
+    `fits=${f.fits} total=${f.totalPlacements}`);
+  const sorted = f.candidates.every(
+    (c, i) => i === 0 || c.distanceToTarget >= f.candidates[i - 1].distanceToTarget);
+  check("fit candidates sorted by target distance", sorted,
+    JSON.stringify(f.candidates.map((c) => c.distanceToTarget)));
+  check("fit best candidate near target", f.candidates[0].distanceToTarget < 15,
+    `got ${f.candidates[0].distanceToTarget}`);
+  const overlaps = (a, b) =>
+    a.min[0] < b.max[0] && a.max[0] > b.min[0] &&
+    a.min[1] < b.max[1] && a.max[1] > b.min[1] &&
+    a.min[2] < b.max[2] && a.max[2] > b.min[2];
+  // No candidate may overlap a body bbox (cavity is blocked by the cube inside).
+  const clean = f.candidates.every((c) => BODIES.every((b) => !overlaps(c, b.bbox)));
+  check("fit candidates avoid all bodies", clean,
+    JSON.stringify(f.candidates.map((c) => c.min)));
+
+  // Part larger than the region -> loud impossible.
+  const imp = await engine.fit({
+    dims: [10, 10, 10], region: { min: [0, 0, 0], max: [5, 5, 5] } });
+  check("fit impossible when part exceeds region",
+    !imp.fits && imp.totalPlacements === 0 && /larger than the search region/.test(imp.note),
+    JSON.stringify({ fits: imp.fits, note: imp.note }));
+
+  // Documented cavity semantics: with only the hollow shell as obstacle, its
+  // enclosed cavity counts as free space.
+  const cav = await engine.fit({
+    dims: [4, 4, 4], ids: ["hollow"],
+    region: { min: [-10, -10, -10], max: [10, 10, 10] }, target: [0, 0, 0] });
+  const c0 = cav.candidates[0];
+  const inCavity = c0 && [0, 1, 2].every((i) => c0.min[i] > -8 && c0.max[i] < 8);
+  check("fit cavity counts as free space", cav.fits && inCavity,
+    JSON.stringify(c0));
+}
+
 console.log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

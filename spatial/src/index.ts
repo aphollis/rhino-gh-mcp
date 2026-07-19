@@ -9,6 +9,7 @@ export type {
   VoxelsResult,
   SectionResult,
   ViewsResult,
+  FitResult,
 } from "./types.js";
 
 export { SpatialEngine } from "./engine.js";

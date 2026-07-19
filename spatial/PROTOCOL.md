@@ -177,5 +177,16 @@ export interface ViewsResult { png: Buffer; legend: string }
 ## 6. MCP tools (registered in src/index.ts; names shared with future Fusion server)
 
 space_digest, space_measure, space_relations, space_voxels, space_section,
-space_views. views returns MCP image content (PNG base64) + legend text; all
-others return JSON text.
+space_views, space_fit. views returns MCP image content (PNG base64) + legend
+text; all others return JSON text.
+
+## 7. space_fit (added post-M4, per RFD-001 §8b)
+
+`SpatialEngine.fit(opts)` — free-space/placement search. opts: `{dims:[3],
+clearance?, ids?, region?:{min,max}, res? (8..64 default 32), target?:[3],
+maxResults? (default 5)}`. Region defaults to the scene bbox expanded by the
+padded part size; target defaults to the region center. Voxelizes at cell =
+min(longestRegionAxis/res, minPaddedDim/2), builds a 3D summed-area table,
+and returns `FitResult` (types.ts): candidates sorted by distanceToTarget,
+totalPlacements, cellSize, and a note stating grid accuracy + the enclosed-
+cavity caveat. No new adapter surface needed.

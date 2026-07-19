@@ -14,6 +14,41 @@ const LAYOUT: Record<"x" | "y" | "z", { row: number; col: number; rowLabel: stri
   y: { row: 2, col: 0, rowLabel: "+z to -z", colLabel: "-x to +x" },
 };
 
+/**
+ * Build a point-occupancy test over a set of meshed bodies: occupied when the
+ * point is inside a solid or within halfDiag of any surface. Shared by the
+ * voxelizer and the fit (free-space) search.
+ */
+export function makeOccupancyTest(items: MeshedBody[], halfDiag: number): (p: Vec3) => boolean {
+  // Pre-expand each body's bbox by the fill tolerance for quick rejection.
+  const expanded = items.map((it) => {
+    const b = it.info.bbox;
+    return {
+      it,
+      min: [b.min[0] - halfDiag, b.min[1] - halfDiag, b.min[2] - halfDiag] as Vec3,
+      max: [b.max[0] + halfDiag, b.max[1] + halfDiag, b.max[2] + halfDiag] as Vec3,
+    };
+  });
+
+  const tmp = new THREE.Vector3();
+  const target = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
+
+  return function occupied(p: Vec3): boolean {
+    for (const e of expanded) {
+      if (p[0] < e.min[0] || p[0] > e.max[0] || p[1] < e.min[1] || p[1] > e.max[1] ||
+          p[2] < e.min[2] || p[2] > e.max[2]) continue;
+      // Surface proximity first (cheap, also catches thin surfaces/walls).
+      // maxThreshold only prunes BVH descent; triangles in leaves whose bounds
+      // contain the point can still be returned farther away, so re-check.
+      tmp.set(p[0], p[1], p[2]);
+      const hit = e.it.bm.bvh.closestPointToPoint(tmp, target, 0, halfDiag);
+      if (hit && hit.distance <= halfDiag) return true;
+      if (e.it.info.kind === "solid" && insideSolid(e.it.bm.bvh, p)) return true;
+    }
+    return false;
+  };
+}
+
 export function computeVoxels(
   items: MeshedBody[],
   units: string,
@@ -39,33 +74,7 @@ export function computeVoxels(
     max: [bbox.min[0] + n[0] * cell, bbox.min[1] + n[1] * cell, bbox.min[2] + n[2] * cell],
   };
 
-  // Pre-expand each body's bbox by the fill tolerance for quick rejection.
-  const expanded = items.map((it) => {
-    const b = it.info.bbox;
-    return {
-      it,
-      min: [b.min[0] - halfDiag, b.min[1] - halfDiag, b.min[2] - halfDiag] as Vec3,
-      max: [b.max[0] + halfDiag, b.max[1] + halfDiag, b.max[2] + halfDiag] as Vec3,
-    };
-  });
-
-  const tmp = new THREE.Vector3();
-  const target = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
-
-  function occupied(p: Vec3): boolean {
-    for (const e of expanded) {
-      if (p[0] < e.min[0] || p[0] > e.max[0] || p[1] < e.min[1] || p[1] > e.max[1] ||
-          p[2] < e.min[2] || p[2] > e.max[2]) continue;
-      // Surface proximity first (cheap, also catches thin surfaces/walls).
-      // maxThreshold only prunes BVH descent; triangles in leaves whose bounds
-      // contain the point can still be returned farther away, so re-check.
-      tmp.set(p[0], p[1], p[2]);
-      const hit = e.it.bm.bvh.closestPointToPoint(tmp, target, 0, halfDiag);
-      if (hit && hit.distance <= halfDiag) return true;
-      if (e.it.info.kind === "solid" && insideSolid(e.it.bm.bvh, p)) return true;
-    }
-    return false;
-  }
+  const occupied = makeOccupancyTest(items, halfDiag);
 
   const layerAxis = AXIS_INDEX[axis];
   const layout = LAYOUT[axis];

@@ -637,6 +637,45 @@ server.registerTool(
 );
 
 server.registerTool(
+  "space_fit",
+  {
+    description:
+      "Free-space/placement search: find axis-aligned positions where a box of given dimensions fits " +
+      "with a clearance on all sides, avoiding existing geometry. Returns candidate placements (bbox + " +
+      "center) sorted by distance to a target point, plus the total number of valid positions. Use for " +
+      "'where can this part go?' assembly questions. Grid-approximate — verify a chosen spot with " +
+      "space_measure.",
+    inputSchema: {
+      dims: z.array(z.number().positive()).length(3).describe("Part size [dx,dy,dz] in doc units"),
+      clearance: z.number().min(0).optional().describe("Required clearance on all sides (default 0)"),
+      ids: idsParam,
+      region: z
+        .object({
+          min: z.array(z.number()).length(3),
+          max: z.array(z.number()).length(3),
+        })
+        .optional()
+        .describe("Search region bbox; default = scene bbox expanded by the part size"),
+      target: z.array(z.number()).length(3).optional().describe("Prefer placements near this point"),
+      res: z.number().int().min(8).max(64).optional().describe("Grid cells along longest axis (default 32)"),
+      maxResults: z.number().int().min(1).max(20).optional().describe("Candidates to return (default 5)"),
+    },
+  },
+  async ({ dims, clearance, ids, region, target, res, maxResults }) =>
+    spatialCall(() =>
+      spatial.fit({
+        dims: dims as [number, number, number],
+        clearance,
+        ids,
+        region: region as { min: [number, number, number]; max: [number, number, number] } | undefined,
+        target: target as [number, number, number] | undefined,
+        res,
+        maxResults,
+      }),
+    ),
+);
+
+server.registerTool(
   "space_views",
   {
     description:

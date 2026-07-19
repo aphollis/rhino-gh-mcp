@@ -1,10 +1,11 @@
 import * as THREE from "three";
 import type {
-  BodyInfo, DigestResult, GeometryAdapter, MeasureOp, RelationsResult,
+  BodyInfo, DigestResult, FitResult, GeometryAdapter, MeasureOp, RelationsResult,
   SceneInfo, SectionResult, ViewsResult, VoxelsResult,
 } from "./types.js";
 import { MeshCache, type MeshedBody } from "./cache.js";
 import { enclosedBy, insideSolid } from "./inside.js";
+import { computeFit } from "./fit.js";
 import { computeVoxels } from "./voxels.js";
 import { computeSection } from "./section.js";
 import { renderViews } from "./views.js";
@@ -177,6 +178,38 @@ export class SpatialEngine {
     if (items.length === 0) throw new Error("section: no tessellatable bodies in scope");
     const tolerance = Math.max(...items.map((it) => it.bm.mesh.tolerance));
     return deepRound(computeSection(items, opts.origin, opts.normal, tolerance));
+  }
+
+  async fit(opts: {
+    dims: [number, number, number];
+    clearance?: number;
+    ids?: string[];
+    region?: { min: [number, number, number]; max: [number, number, number] };
+    res?: number;
+    target?: [number, number, number];
+    maxResults?: number;
+  }): Promise<FitResult> {
+    const scene = await this.adapter.bodies(undefined, opts.ids);
+    const items = await this.meshed(scene, scene.bodies);
+    const clearance = opts.clearance ?? 0;
+    const pad = opts.dims.map((d) => d + 2 * clearance) as Vec3;
+
+    let region = opts.region;
+    if (!region) {
+      if (scene.bodies.length === 0) {
+        throw new Error("fit: scene is empty; provide a search region {min,max}");
+      }
+      const u = bboxUnion(scene.bodies.map((b) => b.bbox));
+      region = {
+        min: [u.min[0] - pad[0], u.min[1] - pad[1], u.min[2] - pad[2]],
+        max: [u.max[0] + pad[0], u.max[1] + pad[1], u.max[2] + pad[2]],
+      };
+    }
+    const target = opts.target ?? bboxCenter(region);
+    return deepRound(
+      computeFit(items, scene.units, opts.dims, clearance, region, opts.res, target,
+        opts.maxResults ?? 5),
+    );
   }
 
   async views(opts?: { ids?: string[]; tile?: number }): Promise<ViewsResult> {

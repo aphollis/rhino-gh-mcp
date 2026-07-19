@@ -60,3 +60,19 @@ export interface SectionResult {
 }
 
 export interface ViewsResult { png: Buffer; legend: string }
+
+export interface FitResult {
+  fits: boolean;
+  dims: [number, number, number];
+  clearance: number;
+  region: { min: [number, number, number]; max: [number, number, number] };
+  cellSize: number;
+  totalPlacements: number;
+  candidates: {
+    min: [number, number, number];
+    max: [number, number, number];
+    center: [number, number, number];
+    distanceToTarget: number;
+  }[];
+  note: string;
+}
