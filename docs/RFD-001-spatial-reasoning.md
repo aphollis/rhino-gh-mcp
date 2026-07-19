@@ -1,6 +1,8 @@
 # RFD-001: Spatial Reasoning Harness
 
-**Status:** Accepted (2026-07-18) · **Scope:** rhino-gh-mcp now, Fusion 360 MCP later
+**Status:** Accepted (2026-07-18); M1–M4 implemented same day (spatial-core 30/30
+synthetic tests passing; live validation + M3 benchmark pending) · **Scope:**
+rhino-gh-mcp now, Fusion 360 MCP later
 
 ## 1. Problem
 

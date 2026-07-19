@@ -5,10 +5,13 @@ import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SpatialEngine } from "spatial-core";
 import { RhinoBridge } from "./bridge.js";
+import { RhinoGeometryAdapter } from "./spatial-adapter.js";
 
 const PORT = Number(process.env.RHINO_MCP_PORT ?? 8765);
 const bridge = new RhinoBridge("127.0.0.1", PORT);
+const spatial = new SpatialEngine(new RhinoGeometryAdapter(bridge));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = path.resolve(__dirname, "..", "templates");
@@ -43,6 +46,14 @@ Notes:
 - rhino_execute_python is the escape hatch: it runs Python inside Rhino with
   Rhino, rs (rhinoscriptsyntax), sc (scriptcontext) and System preloaded.
   Assign to a variable named result to get a value back.
+
+3D spatial understanding (space_* tools): for ANY metric question (size,
+position, distance, clearance, containment, hollowness, wall thickness) use
+these instead of screenshots — they return exact numbers. space_digest =
+scene inventory; space_measure = one targeted measurement; space_relations =
+collision/containment; space_voxels = volumetric occupancy layers;
+space_section = internal profiles; space_views = labeled orthographic PNG.
+All accept GH handles, so you can measure recipe outputs without baking.
 `.trim();
 
 const server = new McpServer(
@@ -517,6 +528,138 @@ server.registerTool(
       },
       300_000,
     );
+  },
+);
+
+/* ---------------------------- Spatial reasoning --------------------------- */
+
+async function spatialCall(fn: () => Promise<unknown>): Promise<ToolResult> {
+  try {
+    return text(await fn());
+  } catch (e) {
+    return errorResult(e);
+  }
+}
+
+const idsParam = z
+  .array(z.string())
+  .optional()
+  .describe("Limit to these ids (doc object GUIDs or GH handles); default all bodies");
+
+server.registerTool(
+  "space_digest",
+  {
+    description:
+      "Metric inventory of the 3D scene: every body's kind, bounding box, overall dimensions, " +
+      "kernel-exact volume/area/centroid, and units. Works on Rhino document objects AND Grasshopper " +
+      "component outputs by handle (no baking needed). Prefer this over screenshots for any " +
+      "size/position/count question — it returns exact numbers.",
+    inputSchema: {
+      scope: z.enum(["all", "doc", "gh"]).optional().describe("Source filter (default all)"),
+      ids: idsParam,
+    },
+  },
+  async ({ scope, ids }) => spatialCall(() => spatial.digest({ scope, ids })),
+);
+
+server.registerTool(
+  "space_measure",
+  {
+    description:
+      "Targeted spatial measurement. op='distance' (a,b): min distance + closest points between two " +
+      "bodies. op='bbox' (ids): union bounding box + dims. op='dims' (id): one body's dimensions. " +
+      "op='probe' (point): which solids contain the point + nearest body. Pay-per-question — cheapest " +
+      "way to answer a specific metric query.",
+    inputSchema: {
+      op: z.enum(["distance", "bbox", "dims", "probe"]),
+      a: z.string().optional().describe("distance: first body id/handle"),
+      b: z.string().optional().describe("distance: second body id/handle"),
+      id: z.string().optional().describe("dims: body id/handle"),
+      ids: z.array(z.string()).optional().describe("bbox: body ids/handles"),
+      point: z.array(z.number()).length(3).optional().describe("probe: [x,y,z]"),
+    },
+  },
+  async (args) => spatialCall(() => spatial.measure(args as never)),
+);
+
+server.registerTool(
+  "space_relations",
+  {
+    description:
+      "Pairwise spatial relationships between bodies: clear (with clearance distance), intersects, " +
+      "or containment (a_inside_b / b_inside_a). Use to check collisions, clearances, and nesting. " +
+      "Pairs are bbox-prefiltered and capped.",
+    inputSchema: {
+      ids: idsParam,
+      maxPairs: z.number().int().min(1).max(100).optional().describe("Pair cap (default 20)"),
+    },
+  },
+  async ({ ids, maxPairs }) => spatialCall(() => spatial.relations({ ids, maxPairs })),
+);
+
+server.registerTool(
+  "space_voxels",
+  {
+    description:
+      "Volumetric occupancy of the scene as stacked ASCII layers ('#'=filled, '.'=empty) along an " +
+      "axis — a 3D mental model you can reason over slice by slice. Reveals hollowness, mass " +
+      "distribution, and internal structure that no screenshot shows. Default 16-cell resolution.",
+    inputSchema: {
+      ids: idsParam,
+      res: z.number().int().min(4).max(48).optional().describe("Cells along longest axis (default 16)"),
+      axis: z.enum(["x", "y", "z"]).optional().describe("Stacking axis (default z)"),
+    },
+  },
+  async ({ ids, res, axis }) => spatialCall(() => spatial.voxels({ ids, res, axis })),
+);
+
+server.registerTool(
+  "space_section",
+  {
+    description:
+      "Cut the scene with a plane and return the profile loops with lengths, areas, and wall " +
+      "thickness (when nested loops exist). The way to inspect internal structure: shells, " +
+      "cavities, wall thicknesses.",
+    inputSchema: {
+      origin: z.array(z.number()).length(3).describe("Point on the cutting plane [x,y,z]"),
+      normal: z.array(z.number()).length(3).describe("Plane normal [x,y,z]"),
+      ids: idsParam,
+    },
+  },
+  async ({ origin, normal, ids }) =>
+    spatialCall(() =>
+      spatial.section({
+        ids,
+        origin: origin as [number, number, number],
+        normal: normal as [number, number, number],
+      }),
+    ),
+);
+
+server.registerTool(
+  "space_views",
+  {
+    description:
+      "Neutral engineering multiview of the geometry: one PNG with four labeled orthographic tiles " +
+      "(top / front / right / iso), depth-shaded with a scale grid, plus a text legend. Better than " +
+      "a perspective screenshot for understanding form — no camera guesswork.",
+    inputSchema: {
+      ids: idsParam,
+      tile: z.number().int().min(120).max(480).optional().describe("Pixels per tile (default 240)"),
+    },
+  },
+  async ({ ids, tile }) => {
+    try {
+      const r = await spatial.views({ ids, tile });
+      return {
+        content: [
+          { type: "text", text: r.legend },
+          { type: "image", data: r.png.toString("base64"), mimeType: "image/png" },
+        ],
+      };
+    } catch (e) {
+      return errorResult(e);
+    }
   },
 );
 

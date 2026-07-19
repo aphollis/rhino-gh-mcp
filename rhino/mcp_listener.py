@@ -116,6 +116,11 @@ def get_doc():
 # components by "r"/"c" instead of 36-char GUIDs. Reset on new/cleared docs.
 _HANDLES = {}
 
+# Monotonic scene version (PROTOCOL.md section 2). Starts at 1; incremented by
+# the dispatcher (Listener._handle) after every SUCCESSFUL mutating call.
+# Reported by the space.* commands so spatial-core can invalidate its caches.
+SCENE_VERSION = 1
+
 
 def register_handle(key, guid):
     if key:
@@ -1132,6 +1137,448 @@ def cmd_gh_build(params):
     return run_on_ui(work, timeout=UI_TIMEOUT)
 
 
+# --------------------------------------------------------------------------- #
+# spatial commands (PROTOCOL.md sections 1-2)
+# --------------------------------------------------------------------------- #
+
+def _bbox_dict(bb):
+    return {"min": [float(bb.Min.X), float(bb.Min.Y), float(bb.Min.Z)],
+            "max": [float(bb.Max.X), float(bb.Max.Y), float(bb.Max.Z)]}
+
+
+def _kind_of(geo):
+    """Contract kind mapping: closed Brep/Extrusion/closed Mesh -> solid;
+    open Brep/Surface -> surface; open Mesh -> mesh; Curve -> curve; else other."""
+    RG = Rhino.Geometry
+    try:
+        if isinstance(geo, RG.Brep):
+            return "solid" if geo.IsSolid else "surface"
+        if isinstance(geo, RG.Extrusion):
+            solid = False
+            try:
+                solid = bool(geo.IsSolid)
+            except Exception:
+                try:
+                    b = geo.ToBrep()
+                    solid = bool(b is not None and b.IsSolid)
+                except Exception:
+                    solid = False
+            return "solid" if solid else "surface"
+        if isinstance(geo, RG.Mesh):
+            return "solid" if geo.IsClosed else "mesh"
+        if isinstance(geo, RG.Surface):
+            return "surface"
+        if isinstance(geo, RG.Curve):
+            return "curve"
+    except Exception:
+        pass
+    return "other"
+
+
+def _body_props(geo):
+    """(kind, bbox, volume, area, centroid) for one geometry. Mass properties
+    are kernel-exact when computable, else None (contract: keep shape, use null)."""
+    RG = Rhino.Geometry
+    kind = _kind_of(geo)
+    bb = None
+    try:
+        bb = geo.GetBoundingBox(True)
+    except Exception:
+        pass
+    mg = geo
+    if isinstance(geo, RG.Extrusion):
+        # Mass-properties overloads want a Brep, not an Extrusion.
+        try:
+            b = geo.ToBrep()
+            if b is not None:
+                mg = b
+        except Exception:
+            pass
+    volume = None
+    centroid = None
+    area = None
+    if kind == "solid":
+        try:
+            vmp = RG.VolumeMassProperties.Compute(mg)
+            if vmp is not None:
+                volume = float(vmp.Volume)
+                c = vmp.Centroid
+                centroid = [float(c.X), float(c.Y), float(c.Z)]
+        except Exception:
+            pass
+    if kind in ("solid", "surface", "mesh"):
+        try:
+            amp = RG.AreaMassProperties.Compute(mg)
+            if amp is not None:
+                area = float(amp.Area)
+        except Exception:
+            pass
+    return kind, bb, volume, area, centroid
+
+
+def _gh_find_by_guid(target):
+    """Find a GH canvas object by InstanceGuid. None if GH absent / not found."""
+    try:
+        canvas = GH().Instances.ActiveCanvas
+    except Exception:
+        return None
+    if canvas is None or canvas.Document is None:
+        return None
+    for o in canvas.Document.Objects:
+        if o.InstanceGuid == target:
+            return o
+    return None
+
+
+def _doc_find_by_guid(target):
+    """Find a Rhino DOC object by its Id. None if not found."""
+    rdoc = Rhino.RhinoDoc.ActiveDoc
+    if rdoc is None:
+        return None
+    for o in rdoc.Objects:
+        try:
+            if o.Id == target:
+                return o
+        except Exception:
+            pass
+    return None
+
+
+def _resolve_space_id(id_str):
+    """Resolve an id in order: _HANDLES key -> GH canvas object -> doc object.
+    Returns ("gh", gh_object) or ("doc", rhino_object)."""
+    s = str(id_str)
+    if s in _HANDLES:
+        try:
+            target = System.Guid.Parse(_HANDLES[s])
+        except Exception:
+            target = None
+        if target is not None:
+            obj = _gh_find_by_guid(target)
+            if obj is not None:
+                return ("gh", obj)
+    try:
+        target = System.Guid.Parse(s)
+    except Exception:
+        raise RuntimeError(
+            "'%s' is not a known handle or GUID. Known handles: %s" %
+            (id_str, ", ".join(sorted(_HANDLES.keys())) or "(none)"))
+    obj = _gh_find_by_guid(target)
+    if obj is not None:
+        return ("gh", obj)
+    obj = _doc_find_by_guid(target)
+    if obj is not None:
+        return ("doc", obj)
+    raise RuntimeError("No GH or document object with id/handle '%s'." % id_str)
+
+
+def _gh_geometry_items(obj):
+    """All geometric items on a GH object: every output param's VolatileData
+    (or the param's own data if it is not a component), converted with
+    GH_Convert.ToGeometryBase. Non-geometric items are skipped silently."""
+    G = GH()
+    plist = []
+    if hasattr(obj, "Params"):
+        for p in obj.Params.Output:
+            plist.append(p)
+    else:
+        plist.append(obj)
+    out = []
+    for p in plist:
+        try:
+            data = p.VolatileData
+        except Exception:
+            continue
+        try:
+            paths = list(data.Paths)
+        except Exception:
+            continue
+        for path in paths:
+            try:
+                branch = data.get_Branch(path)
+            except Exception:
+                continue
+            for item in branch:
+                if item is None:
+                    continue
+                gb = None
+                try:
+                    gb = G.Kernel.GH_Convert.ToGeometryBase(item)
+                except Exception:
+                    pass
+                if gb is not None:
+                    out.append(gb)
+    return out
+
+
+def _gh_handle_body(key, obj):
+    """Aggregate a GH handle's geometry into one BodyInfo dict (contract:
+    union bbox, sum volume over closed items, itemCount; kind = solid if any
+    closed solid item else kind of the first item). None when no geometry."""
+    items = _gh_geometry_items(obj)
+    if not items:
+        return None
+    union = None
+    any_solid = False
+    first_kind = None
+    vol_sum = 0.0
+    has_vol = False
+    area_sum = 0.0
+    has_area = False
+    cx = 0.0
+    cy = 0.0
+    cz = 0.0
+    for gb in items:
+        kind, bb, volume, area, centroid = _body_props(gb)
+        if first_kind is None:
+            first_kind = kind
+        if kind == "solid":
+            any_solid = True
+        if bb is not None and bb.IsValid:
+            if union is None:
+                union = bb
+            else:
+                union = Rhino.Geometry.BoundingBox.Union(union, bb)
+        if volume is not None:
+            vol_sum += volume
+            has_vol = True
+            if centroid is not None:
+                cx += centroid[0] * volume
+                cy += centroid[1] * volume
+                cz += centroid[2] * volume
+        if area is not None:
+            area_sum += area
+            has_area = True
+    if union is None:
+        return None
+    centroid_out = None
+    if has_vol and vol_sum > 0:
+        centroid_out = [cx / vol_sum, cy / vol_sum, cz / vol_sum]
+    return {"id": key,
+            "name": safe_str(obj.NickName) or safe_str(obj.Name) or None,
+            "source": "gh",
+            "kind": "solid" if any_solid else (first_kind or "other"),
+            "bbox": _bbox_dict(union),
+            "volume": vol_sum if has_vol else None,
+            "area": area_sum if has_area else None,
+            "centroid": centroid_out,
+            "itemCount": len(items),
+            "layer": None}
+
+
+def cmd_space_bodies(params):
+    scope = str(params.get("scope") or "all").lower()
+    if scope not in ("all", "doc", "gh"):
+        raise RuntimeError("scope must be 'all', 'doc' or 'gh' (got '%s')." % scope)
+    raw_ids = params.get("ids")
+    ids_norm = None
+    if raw_ids:
+        ids_norm = set()
+        for i in raw_ids:
+            ids_norm.add(str(i))
+            ids_norm.add(str(i).lower())
+
+    def wanted(names):
+        if ids_norm is None:
+            return True
+        for n in names:
+            if n and (n in ids_norm or n.lower() in ids_norm):
+                return True
+        return False
+
+    def work():
+        rdoc = Rhino.RhinoDoc.ActiveDoc
+        bodies = []
+
+        if scope in ("all", "doc") and rdoc is not None:
+            OT = Rhino.DocObjects.ObjectType
+            for o in rdoc.Objects:
+                try:
+                    ot = o.ObjectType
+                    if ot == OT.Light or ot == OT.Grip:
+                        continue
+                    oid = safe_str(o.Id)
+                    if not wanted([oid]):
+                        continue
+                    geo = o.Geometry
+                    if geo is None:
+                        continue
+                    kind, bb, volume, area, centroid = _body_props(geo)
+                    if bb is None or not bb.IsValid:
+                        continue
+                    layer = None
+                    try:
+                        layer = safe_str(rdoc.Layers[o.Attributes.LayerIndex].FullPath)
+                    except Exception:
+                        pass
+                    bodies.append({"id": oid,
+                                   "name": safe_str(o.Attributes.Name) or None,
+                                   "source": "doc",
+                                   "kind": kind,
+                                   "bbox": _bbox_dict(bb),
+                                   "volume": volume,
+                                   "area": area,
+                                   "centroid": centroid,
+                                   "itemCount": None,
+                                   "layer": layer})
+                except Exception:
+                    continue
+
+        if scope in ("all", "gh"):
+            for key in sorted(_HANDLES.keys()):
+                guid_str = _HANDLES[key]
+                if not wanted([key, guid_str]):
+                    continue
+                try:
+                    target = System.Guid.Parse(guid_str)
+                    obj = _gh_find_by_guid(target)
+                    if obj is None:
+                        continue
+                    body = _gh_handle_body(key, obj)
+                    if body is not None:
+                        bodies.append(body)
+                except Exception:
+                    continue
+
+        units = "None"
+        if rdoc is not None:
+            units = rdoc.ModelUnitSystem.ToString()
+        return {"units": units,
+                "upAxis": "z",
+                "sceneVersion": SCENE_VERSION,
+                "bodies": bodies}
+
+    return run_on_ui(work, timeout=UI_TIMEOUT)
+
+
+def _append_tessellation(mesh, gb, mp):
+    """Append gb's tessellation to mesh. Returns number of sub-meshes appended."""
+    RG = Rhino.Geometry
+    if isinstance(gb, RG.Mesh):
+        mesh.Append(gb)
+        return 1
+    sub_t = getattr(RG, "SubD", None)
+    if sub_t is not None and isinstance(gb, sub_t):
+        try:
+            sm = RG.Mesh.CreateFromSubD(gb, 2)
+            if sm is not None:
+                mesh.Append(sm)
+                return 1
+        except Exception:
+            pass
+        return 0
+    brep = None
+    if isinstance(gb, RG.Brep):
+        brep = gb
+    elif isinstance(gb, RG.Extrusion):
+        try:
+            brep = gb.ToBrep()
+        except Exception:
+            brep = None
+    elif isinstance(gb, RG.Surface):
+        try:
+            brep = gb.ToBrep()
+        except Exception:
+            brep = None
+    if brep is None:
+        return 0
+    parts = None
+    try:
+        parts = RG.Mesh.CreateFromBrep(brep, mp)
+    except Exception:
+        parts = None
+    if parts is None:
+        return 0
+    n = 0
+    for m in parts:
+        if m is not None:
+            mesh.Append(m)
+            n += 1
+    return n
+
+
+def _unmeshable_kind(gb):
+    RG = Rhino.Geometry
+    if isinstance(gb, RG.Curve):
+        return "curve"
+    if isinstance(gb, (RG.Point, RG.PointCloud)):
+        return "point"
+    return None
+
+
+def _pack_b64(arr, elem_size):
+    """base64 of a .NET primitive array's raw little-endian bytes (no Python loops)."""
+    byte_len = arr.Length * elem_size
+    barr = System.Array.CreateInstance(System.Byte, byte_len)
+    System.Buffer.BlockCopy(arr, 0, barr, 0, byte_len)
+    return System.Convert.ToBase64String(barr)
+
+
+def cmd_space_tessellate(params):
+    id_str = params.get("id")
+    if not id_str:
+        raise RuntimeError("An 'id' (guid or handle) is required.")
+    density = params.get("density")
+    if density is None:
+        density = 0.5
+    density = float(density)
+
+    def work():
+        RG = Rhino.Geometry
+        rdoc = Rhino.RhinoDoc.ActiveDoc
+        source, obj = _resolve_space_id(id_str)
+        if source == "gh":
+            geos = _gh_geometry_items(obj)
+            if not geos:
+                raise RuntimeError(
+                    "GH object '%s' has no geometric output items." % id_str)
+        else:
+            geos = [obj.Geometry]
+
+        mp = RG.MeshingParameters(density)
+        mesh = RG.Mesh()
+        appended = 0
+        unmeshable = None
+        for gb in geos:
+            if gb is None:
+                continue
+            n = _append_tessellation(mesh, gb, mp)
+            appended += n
+            if n == 0 and unmeshable is None:
+                unmeshable = _unmeshable_kind(gb)
+        if appended == 0 or mesh.Faces.Count == 0:
+            if unmeshable is not None:
+                raise RuntimeError(
+                    "id %s is a %s; not meshable — use space.bodies for its bbox" %
+                    (id_str, unmeshable))
+            raise RuntimeError("id %s produced no meshable geometry." % id_str)
+
+        mesh.Faces.ConvertQuadsToTriangles()
+        mesh.Compact()
+
+        tol = 0.0
+        try:
+            bb = mesh.GetBoundingBox(True)
+            tol = float(bb.Diagonal.Length) * 0.002
+        except Exception:
+            pass
+
+        verts_f = mesh.Vertices.ToFloatArray()   # Single[] xyz interleaved
+        idx = mesh.Faces.ToIntArray(True)        # Int32[] triangle triples
+        units = "None"
+        if rdoc is not None:
+            units = rdoc.ModelUnitSystem.ToString()
+        return {"vertices_b64": _pack_b64(verts_f, 4),
+                "indices_b64": _pack_b64(idx, 4),
+                "vertexCount": mesh.Vertices.Count,
+                "triangleCount": mesh.Faces.Count,
+                "toleranceEstimate": tol,
+                "units": units,
+                "sceneVersion": SCENE_VERSION}
+
+    return run_on_ui(work, timeout=UI_TIMEOUT)
+
+
 HANDLERS = {
     "ping": lambda p: "pong",
     "rhino.execute": cmd_rhino_execute,
@@ -1155,7 +1602,17 @@ HANDLERS = {
     "gh.open": cmd_gh_open,
     "gh.bake": cmd_gh_bake,
     "gh.build": cmd_gh_build,
+    "space.bodies": cmd_space_bodies,
+    "space.tessellate": cmd_space_tessellate,
 }
+
+# Methods that can change geometry (PROTOCOL.md section 2). The dispatcher
+# bumps SCENE_VERSION after each successful call to one of these.
+MUTATING_METHODS = set([
+    "gh.add", "gh.set_value", "gh.connect", "gh.disconnect", "gh.delete",
+    "gh.edit", "gh.build", "gh.new", "gh.open", "gh.recompute", "gh.bake",
+    "rhino.execute",
+])
 
 
 # --------------------------------------------------------------------------- #
@@ -1252,12 +1709,16 @@ class Listener(object):
         if fn is None:
             return json.dumps({"id": rid,
                                "error": {"message": "unknown method '%s'" % method}})
+        global SCENE_VERSION
         try:
-            return json.dumps({"id": rid, "result": fn(params)})
+            result = fn(params)
         except Exception as e:
             return json.dumps({"id": rid,
                                "error": {"message": safe_str(e) or "unknown error",
                                          "traceback": traceback.format_exc()}})
+        if method in MUTATING_METHODS:
+            SCENE_VERSION += 1
+        return json.dumps({"id": rid, "result": result})
 
 
 def kill_previous_instance():
